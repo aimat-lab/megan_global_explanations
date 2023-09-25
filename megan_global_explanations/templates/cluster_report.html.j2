@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Concept Clustering Report</title>
+</head>
+<body>
+    {% for page in pages %}
+    
+    {{ page }}
+
+    {% if not loop.last %}
+    <p style="page-break-before: always"></p>
+    {% endif %}
+    
+    {% endfor %}
+</body>
+</html>

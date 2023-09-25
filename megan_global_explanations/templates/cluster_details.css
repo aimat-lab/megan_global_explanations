@@ -1,0 +1,63 @@
+html {
+    font-size: 0.8em;
+    font-family: sans-serif;
+}
+
+@page {
+    size: A4;
+    margin: 1cm;
+}
+
+h2 {
+    font-size: 1.1em;
+}
+
+.tabular {
+    display: flex;
+    flex-direction: column;
+}
+
+.tabular-item {
+    display: flex;
+    flex-direction: row;
+}
+
+.tabular-item>div {
+    width: 50%;
+}
+
+div.statistics {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-around;
+    flex-wrap: wrap;
+}
+
+div.stat-item {
+    max-width: 40%;
+    width: 40%;
+}
+
+div.stat-item>div {
+    width: 100%;
+    text-align: center;
+    margin: 0 auto;
+}
+
+div.examples {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
+div.example-item {
+    width: 25%;
+}
+
+img {
+    max-width: 100%;
+    width: 100%;
+    height: auto;
+}
+

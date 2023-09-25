@@ -1,0 +1,55 @@
+<div class='cluster-details'>
+
+    <h1>Cluster #{{ index }}</h1>
+    
+    <h2>Summary</h2>
+    <div class="summary">
+        Cluster {{ index }}, from importance channel <em>{{ channel_index.active }}</em>, represents a motif consisting of <em>{{ '%.1f' % mask_size.avg }} (&#177;{{ '%.1f' % mask_size.std }})</em> nodes.
+        The concept is generally associated with an impact of <em>{{ '%.1f' % contribution.avg }} (&#177;{{ '%.1f' % contribution.std }})</em> on the prediction outcome.
+    </div>
+    
+    <h2>Properties</h2>
+    <div class="tabular">
+
+        <div class="tabular-item">
+            <div class="item-key">No. Cluster Members: </div>
+            <div class="item-value">{{ num_elements }}</div>
+        </div>
+
+        <div class="tabular-item">
+            <div class="item-key">Channel Index</div>
+            <div class="item-value">{{ channel_index["avg"] }} ({{ channel_index["std"] }})</div>
+        </div>
+
+    </div>
+
+    <h2>Aggregated Statistics</h2>
+    <div class="statistics">
+        <div class="stat-item">
+            <div>Prediction Impact Distribution</div>
+            <img src="file://{{ contribution.path }}">
+        </div>
+        <div class="stat-item">
+            <div>Mask Size Distribution</div>
+            <img src="file://{{ mask_size.path }}">
+        </div>
+        <div class="stat-item">
+            <div>Prediction Output Distribution</div>
+            <img src="file://{{ prediction.path }}">
+        </div>
+        <div class="stat-item">
+            <div>Distance to Centroid Distribution</div>
+            <img src="file://{{ centroid_distance.path }}">
+        </div>
+    </div>
+
+    <h2>Example Elements</h2>
+    <div class='examples'>
+        {% for example in examples %}
+        <div class="example-item">
+            <img src="file://{{ example.path }}">
+        </div>
+        {% endfor %}
+    </div>
+
+</div>
