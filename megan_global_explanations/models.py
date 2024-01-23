@@ -583,6 +583,7 @@ class GraphPredictor(ks.models.Model, ClusterPackingMixin):
                  embedding_units: t.List[int],
                  final_units: t.List[int],
                  final_activation: str = 'linear',
+                 embedding_activation: str = 'tanh',
                  num_heads: int = 2,
                  **kwargs):
         ks.models.Model.__init__(self, **kwargs)
@@ -611,7 +612,7 @@ class GraphPredictor(ks.models.Model, ClusterPackingMixin):
         # ~ the projection network for the latent space
         self.embedding_layers = []
         self.embedding_activations = ['swish' for _ in self.embedding_units]
-        self.embedding_activations[-1] = 'tanh'
+        self.embedding_activations[-1] = embedding_activation
         self.embedding_biases = [True for _ in self.embedding_units]
         self.embedding_biases[-1] = False
         for k, act, bias in zip(self.embedding_units, self.embedding_activations, self.embedding_biases):

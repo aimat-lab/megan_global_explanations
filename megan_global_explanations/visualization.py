@@ -123,13 +123,12 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
     """
     Each cluster details dict has to consist of the following items:
     - index: An integer index that uniquely identifies the cluster
-    - embeddings: 
-    - index_tuples:
-    - graphs: A list of the grpahs
+    - embeddings: a list of the D-dimensional cluster embeddings
+    - index_tuples: 
+    - graphs: A list of the graphs
     
     Note that all the given lists needs to be in the same order, which means that list elements 
     at the same indices need to represent information about the same dataset element.
-    
     """
     report_template = TEMPLATE_ENV.get_template('cluster_report.html.j2')
     
@@ -169,7 +168,7 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             if dataset_type == 'regression':
                 # Since regression is only one value anyways we only need to choose the appropriate channel 
                 for graph, dev, (i, k) in zip(graphs, deviations, index_tuples):
-                    contributions.append(dev[k][0])
+                    contributions.append(dev[0][k])
                     
             if dataset_type == 'classification':
                 for graph, dev, (i, k) in zip(graphs, deviations, index_tuples):
@@ -236,21 +235,23 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.legend()
             centroid_distances_path = os.path.join(temp_path, f'{cluster_index:02d}_centroid_distances.png')
             fig.savefig(centroid_distances_path, bbox_inches='tight')
+            plt.close(fig)
             
             # ~ Creating the example visualizations
             
             # The easiest default case is to just pick some random elements from the entire cluster. This will 
             # perhaps provide the most realistic overview over the cluster.
             indices = list(range(num_elements))
+            num_examples_ = min(num_examples, len(indices))
             if examples_type == 'random':
-                example_indices = random.sample(indices, k=num_examples)
+                example_indices = random.sample(indices, k=num_examples_)
                 
             # In this case we want to select the examples as those elements which are the clostest to the cluster 
             # centroid. For that purpose we obtain the index sorting of the distances to the centroid and then 
             # pick those elements with the lowest distances. 
             elif examples_type == 'centroid':
                 sorted_indices = np.argsort(centroid_distances).tolist()
-                example_indices = sorted_indices[:num_examples]
+                example_indices = sorted_indices[:num_examples_]
             
             examples: t.List[dict] = []
             for c in example_indices:
@@ -263,16 +264,16 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
                 ax.spines['left'].set_visible(False)
                 draw_image(ax, image_path)
                 
-                plot_node_importances = PLOT_NODE_IMPORTANCES_OPTIONS[plot_node_importances]
-                plot_node_importances(
+                plot_node_importances_func = PLOT_NODE_IMPORTANCES_OPTIONS[plot_node_importances]
+                plot_node_importances_func(
                     ax=ax,
                     g=graph,
                     node_positions=np.array(graph['node_positions']),
                     node_importances=np.array(graph['node_importances'])[:, k]
                 )
                 
-                plot_edge_importances = PLOT_EDGE_IMPORTANCES_OPTIONS[plot_edge_importances]
-                plot_edge_importances(
+                plot_edge_importances_func = PLOT_EDGE_IMPORTANCES_OPTIONS[plot_edge_importances]
+                plot_edge_importances_func(
                     ax=ax,
                     g=graph,
                     node_positions=np.array(graph['node_positions']),
