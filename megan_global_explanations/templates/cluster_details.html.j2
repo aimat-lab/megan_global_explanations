@@ -1,14 +1,73 @@
-<div class='cluster-details'>
+<div class="cluster-details">
 
-    <h1>Cluster #{{ index }}</h1>
+    <h1 class="cluster-title" style="background-color: {{ color|default('lightgray') }}">Cluster #{{ index }} <span class="cluster-subtitle">- {{ name|default('unknown') }}</span></h1>
     
+    <!--    CLUSTER SUMMARY 
+            This is a text that summerizes the most important findings about the cluster which most importantly includes the impact 
+            on the prediction outcome (mean fidelity) -->
+
     <h2>Summary</h2>
-    <div class="summary">
-        Cluster {{ index }}, from importance channel <em>{{ channel_index.active }}</em>, represents a motif consisting of <em>{{ '%.1f' % mask_size.avg }} (&#177;{{ '%.1f' % mask_size.std }})</em> nodes.
+
+    <div class="information">
+        &#9432; This is a summary about the most important properties of the cluster. It lists which explanation channel the cluster is from, what the 
+        average size of the explanation is as well as the average impact of this clusters members to the prediction outcom of the model.
+    </div>
+
+    <div class="text summary">
+        Cluster {{ index }}, from importance channel <em>{{ channel_index.active }} ({{ name|default('-') }})</em>, represents a motif consisting of <em>{{ '%.1f' % mask_size.avg }} (&#177;{{ '%.1f' % mask_size.std }})</em> nodes.
         The concept is generally associated with an impact of <em>{{ '%.1f' % contribution.avg }} (&#177;{{ '%.1f' % contribution.std }})</em> on the prediction outcome.
     </div>
     
+    <!--    CLUSTER PROTOTYPE 
+            The cluster prototype section is optional and will only be displayed if the "prototype" field is actually part of the 
+            template context. This section will mainly display the visualization of the cluster prototype graph and additionally 
+            dispaly the description of that prototype. -->
+
+    {% if prototype %}
+    <h2>Prototype</h2>
+
+    <div class="information">
+        &#9432; This section shows the cluster prototype. A "prototype" in this case is a graph which is meant to be representative of the cluster as a whole. 
+        In that sense it is supposed to be the subgraph motif which is the common theme among the cluster members individual explanations. The prototype 
+        consists of a visualization and a natural language description. The prototype is automatically approximated through a non-deterministic process
+        and thus may not be completely accurate. Interpretation of results should be made cautiously.
+    </div>
+
+    <div class="prototype-container">
+        <div class="prototype-image">
+             <img src="file://{{ prototype.path }}">
+        </div>
+        <div class="text prototype-description">
+            {{ prototype['description'] }}
+        </div>
+    </div>
+
+    <!--    The prototype hypothesis is a string which provides a hypothesis about WHY a certain cluster is associated with a certain 
+            effect. Obviously this is quite hard which is why it is optional and does not have to be provided -->
+    {% if 'hypothesis' in prototype %}
+    <h2>Prototype Hypothesis</h2>
+    <div class="text prototype-hypothesis">
+        {{ prototype['hypothesis'] }}
+    </div>
+    {% endif %}
+
+    <!--    If there is a prototype defined then we want to do a page break here so that the entire first page of the report is used 
+            for prototype related content and then the second page after that will be used for the statistics -->
+    <p style="page-break-before: always"></p>
+    {% endif %}
+
     <h2>Properties</h2>
+
+    <!--    CLUSTER STATISTICS
+            In this section some statistics about the cluster are presented to the user. First in the format of a table /
+            listing for individual numerical values and then also in the format of distributional plots for various attributes
+            that might be interesting for the cluster. -->
+
+    <div class="information">
+        &#9432; This section shows some numeric information about the cluster in a tabular format. The left column is a description of the 
+        property and the right column shows the value of that property.
+    </div>
+
     <div class="tabular">
 
         <div class="tabular-item">
@@ -43,8 +102,21 @@
         </div>
     </div>
 
+    <!--    EXAMPLE VISUALIZATIONS
+            Here we visualize some example explanations from the cluster itself so that the user can get a 
+            feeling for that kind of motif the cluster actually represents. -->
+
+    <p style="page-break-before: always"></p>
+
     <h2>Example Elements</h2>
-    <div class='examples'>
+
+    <div class="information">
+        &#9432; This section shows the visualization of some example members of the cluster. A cluster member is a combination of a base graph 
+        and an explanation mask, whereby the masks indicates what kind of motif the cluster represents. In the best case, the explanation 
+        masks (highlighted nodes and edges) show some sort of common pattern even though the base graphs may differ.
+    </div>
+
+    <div class="examples">
         {% for example in examples %}
         <div class="example-item">
             <img src="file://{{ example.path }}">

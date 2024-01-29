@@ -3,6 +3,7 @@ import sys
 import json
 import pathlib
 import logging
+import typing as t
 
 from visual_graph_datasets.data import VisualGraphDatasetReader
 from decouple import config
@@ -19,8 +20,13 @@ if LOG_TESTING:
     LOG.addHandler(logging.StreamHandler(sys.stdout))
     
     
-def load_mock_clusters():
+def load_mock_clusters() -> t.List[dict]:
     """
+    This function loads a cluster data list from the file system. This cluster data list is 
+    a mock data structure mainly intended for testing the creation of the concept cluster reports.
+    
+    :returns: A list of dicts which each contain the information about one cluster such that 
+        it can be used to create the cluster report
     """
     folder_path = os.path.join(ASSETS_PATH, 'mock_clusters')
     

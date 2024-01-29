@@ -12,6 +12,33 @@ h2 {
     font-size: 1.1em;
 }
 
+div.text {
+    text-align: justify;
+    line-height: 160%;
+}
+
+
+/*  This is a generic element that will be placed underneath the intermediate headings to provide a bit of an explanation 
+    about what information can be seen in each of the sections. */
+
+div.information {
+    color: gray;
+    text-align: justify;
+    line-height: 120%;
+    font-size: 0.8em;
+    margin-top: -2px;
+    margin-bottom: 10px;
+}
+
+.cluster-title {
+    padding: 5px;
+}
+
+.cluster-subtitle {
+    font-size: 0.8em;
+    color: gray;
+}
+
 .tabular {
     display: flex;
     flex-direction: column;
@@ -61,3 +88,16 @@ img {
     height: auto;
 }
 
+/*  PROTOTYPE SECTION
+    The prototype section is mainly a two-column display where on the right side there is the cluster prototype visualization 
+    and on the left side there is the prototype description. Both of these columns are in the prototype-container and should 
+    have the same width. */
+
+div.prototype-container {
+    display: flex;
+    flex-direction: row;
+}
+
+div.prototype-container>div {
+    width: 50%;
+}

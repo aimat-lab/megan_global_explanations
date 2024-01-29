@@ -185,6 +185,7 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.legend()
             contribution_path = os.path.join(temp_path, f'{cluster_index:02d}_contribution.png')
             fig.savefig(contribution_path, bbox_inches='tight')
+            plt.close(fig)
             
             # The more important metric here is the size of the explanation mask
             mask_sizes = [np.sum(graph['node_importances']) for graph in graphs]
@@ -198,6 +199,7 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.legend()
             mask_size_path = os.path.join(temp_path, f'{cluster_index:02d}_mask_size.png')
             fig.savefig(mask_size_path, bbox_inches='tight')
+            plt.close(fig)
             
             # ~ Prediction distribution
             # Another distribution that we want to look at is the distribution of the actual predicted values for all 
@@ -214,6 +216,7 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.legend()
             predictions_path = os.path.join(temp_path, f'{cluster_index:02d}_predictions.png')
             fig.savefig(predictions_path, bbox_inches='tight')
+            plt.close(fig)
             
             # ~ Centroid and intra-cluster metrics
             # embeddings: (N, D) - just making sure that we are working with a numpy array here
@@ -294,6 +297,7 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             # will visualize all that information.
             cluster_template = TEMPLATE_ENV.get_template('cluster_details.html.j2')
             cluster_string = cluster_template.render({
+                **data,
                 'index': cluster_index,
                 'num_elements': num_elements,
                 'channel_index': {

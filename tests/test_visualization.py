@@ -3,11 +3,13 @@ import io
 import random
 import tempfile
 import shutil
+import typing as t
 
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from weasyprint import HTML
+from lorem_text import lorem
 
 from visual_graph_datasets.visualization.base import create_frameless_figure, draw_image
 from visual_graph_datasets.visualization.importances import plot_node_importances_background
@@ -36,24 +38,6 @@ def test_generate_contrastive_colors():
             
     fig_path = os.path.join(ARTIFACTS_PATH, 'test_generate_contrastive_colors.pdf')
     fig.savefig(fig_path)
-    
-    
-def test_create_concept_cluster_report_centroid_examples_works():
-    """
-    With the option "centroid", the examples should be generated as those elements that are closest to 
-    the centroid instead of just randomly chosen from the entire cluster.
-    """
-    num_clusters = 3
-    output_path = os.path.join(ARTIFACTS_PATH, 'test_create_concept_cluster_report_centroid_examples_works.pdf')
-    
-    cluster_data_list = load_mock_clusters()
-    
-    create_concept_cluster_report(
-        cluster_data_list=cluster_data_list,
-        path=output_path,
-        examples_type='centroid',
-        num_examples=16,
-    )
 
     
 def test_create_concept_cluster_report_basically_works():
@@ -71,6 +55,24 @@ def test_create_concept_cluster_report_basically_works():
         path=output_path,
     )
     
+
+def test_create_concept_cluster_report_centroid_examples_works():
+    """
+    With the option "centroid", the examples should be generated as those elements that are closest to 
+    the centroid instead of just randomly chosen from the entire cluster.
+    """
+    num_clusters = 3
+    output_path = os.path.join(ARTIFACTS_PATH, 'test_create_concept_cluster_report_centroid_examples_works.pdf')
+    
+    cluster_data_list = load_mock_clusters()
+    
+    create_concept_cluster_report(
+        cluster_data_list=cluster_data_list,
+        path=output_path,
+        examples_type='centroid',
+        num_examples=16,
+    )
+
 
 def test_create_concept_cluster_report_cache_path_works():
     """
@@ -98,6 +100,36 @@ def test_create_concept_cluster_report_cache_path_works():
         assert os.path.isdir(cache_path)
         files = os.listdir(cache_path)
         assert len(files) != 0
+        
+        
+def test_create_cluster_report_prototype_works():
+    
+    # This function will load a cluster data list from the disk where the dict elements exactly have the 
+    # format that is required for the create_concept_cluster_report function
+    cluster_data_list: t.List[dict] = load_mock_clusters()
+    
+    # Now additionally to that base functionality, we want to test here the optional additional functionality 
+    # of providing a cluster prototype as well.
+    # A cluster prototype mainly has to define the path to the image which will be used as the actual prototype 
+    # visualization and it may also provide a description string and a hypothesis string.
+    # as the image path we are simply choose one of the images that are already used as an example.
+    
+    for cluster_info in cluster_data_list:
+        path = random.choice(cluster_info['image_paths'])
+        cluster_info['prototype'] = {
+            'path': path,
+            'description': lorem.paragraph(),
+            'hypothesis': lorem.paragraph(),
+        }
+    
+    output_path = os.path.join(ARTIFACTS_PATH, 'test_create_concept_cluster_report_prototype_works.pdf')
+    create_concept_cluster_report(
+        cluster_data_list=cluster_data_list,
+        path=output_path,
+        examples_type='centroid',
+        num_examples=16,
+    )
+
     
     
 def test_plot_importances_background():
