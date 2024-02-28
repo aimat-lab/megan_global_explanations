@@ -5,11 +5,14 @@ and an already trained MEGAN model.
 
 """
 import os
+import json
 import random
 import pathlib
+import traceback
 import typing as t
 from collections import defaultdict
 
+import umap
 import hdbscan
 import numpy as np
 import matplotlib as mpl
@@ -18,6 +21,8 @@ import visual_graph_datasets.typing as tv
 from sklearn.metrics import pairwise_distances
 from sklearn.metrics.pairwise import paired_cosine_distances
 from sklearn.metrics.pairwise import cosine_distances
+from sklearn.metrics import silhouette_score
+from sklearn.metrics import davies_bouldin_score
 from scipy.spatial.distance import cosine
 from pycomex.functional.experiment import Experiment
 from pycomex.utils import folder_path, file_namespace
@@ -27,6 +32,7 @@ from visual_graph_datasets.graph import graph_find_connected_regions
 from visual_graph_datasets.graph import extract_subgraph
 from visual_graph_datasets.web import ensure_dataset
 from visual_graph_datasets.data import VisualGraphDatasetReader
+from visual_graph_datasets.data import NumericJsonEncoder
 from visual_graph_datasets.processing.base import ProcessingBase
 from visual_graph_datasets.processing.colors import ColorProcessing
 from graph_attention_student.utils import array_normalize
@@ -41,6 +47,9 @@ from megan_global_explanations.prototype.colors import mutate_remove_edge
 from megan_global_explanations.prototype.colors import mutate_modify_node
 from megan_global_explanations.prototype.colors import mutate_add_node
 from megan_global_explanations.prototype.colors import mutate_remove_node
+from megan_global_explanations.gpt import describe_color_graph
+from megan_global_explanations.data import ConceptWriter
+from megan_global_explanations.data import ConceptReader
 
 mpl.use('Agg')
 
@@ -97,6 +106,18 @@ MIN_CLUSTER_SIZE: int = 20
 #       clustering is. Roughly speaking, a larger value here will lead to less clusters while 
 #       lower values tend to result in more clusters.
 MIN_SAMPLES: int = 5
+# :param CLUSTER_SELECTION_METHOD:
+#       This string value determines the method that is used to select the clusters from the HDBSCAN
+#       algorithm. The default value is 'leaf' which is the most conservative method. Other possible
+#       values are 'eom' and 'leaf'.
+CLUSTER_SELECTION_METHOD: str = 'leaf'
+# :param SORT_SIMILARITY:
+#       This boolean flag determines whether the clusters should be sorted by their similarity.
+#       If this is True, the clusters will be sorted by their similarity which means that the order 
+#       of the clusters will be determined by the similarity with each other. Having this enables makes 
+#       the concept report a bit more readable because similar clusters will appear close to each other 
+#       in the report PDF.
+SORT_SIMILARITY: bool = True
 
 # == PROTOTYPE OPTIMIZATION PARAMETERS ==
 # These parameters configure the process of optimizing the cluster prototype representatation
@@ -110,7 +131,51 @@ OPTIMIZE_CLUSTER_PROTOTYPE: bool = True
 #       This integer number determines the number of initial samples that are drawn from the cluster 
 #       members as the initial population of the prototype optimization GA procedure.
 INITIAL_POPULATION_SAMPLE: int = 200
+# :param OPTIMIZE_PROTOTYPE_POPSIZE:
+#       This integer number determines the population size of the genetic optimization algorithm
+#       that is used to optimize the prototype representation.
+OPTIMIZE_PROTOTYPE_POPSIZE: int = 1000
+# :param OPTIMIZE_PROTOTYPE_EPOCHS:
+#       This integer number determines the number of epochs that the genetic optimization algorithm
+#       will be executed for the prototype optimization.
+OPTIMIZE_PROTOTYPE_EPOCHS: int = 50
+# :param OPENAI_KEY:
+#       This string value has to be the OpenAI API key that should be used for the GPT-4 requests
+#       that will be needed to generate the natural language descriptions of the prototypes.
+OPENAI_KEY: str = os.getenv('OPENAI_KEY')
+# :param DESCRIBE_PROTOTYPE:
+#       This boolean flag determines whether the prototype description should be generated at all
+#       or not. If this is False, the entire description routine will be skipped during the
+#       cluster discovery.
+DESCRIBE_PROTOTYPE: bool = True
+# :param HYPOTHESIZE_PROTOTYPE:
+#       This boolean flag determines whether the prototype hypothesis should be generated at all
+#       or not. If this is False, the entire hypothesis routine will be skipped during the
+#       cluster discovery.
+HYPOTHESIZE_PROTOTYPE: bool = True
+# :param CONTRIBUTION_THRESHOLDS:
+#       This dictionary determines the thresholds to be used when converting the contribution values 
+#       of classification tasks into the strings such that they can be passed to the language model 
+#       for the hypothesis generation. The keys are the contribution values and the values are the 
+#       strings that will be used to describe the impact of these contributions in words.
+#       Note that this will only be used for classification problems since for classification problems 
+#       the contribution values are measured in classification logits which do not have a direct meaning 
+#       to the language model. In contrast, regression contributions are measured directly in the 
+#       target space and therefore do not need to be converted.
+CONTRIBUTION_THRESHOLDS: dict = {
+    10: 'small',
+    20: 'high'
+}
 
+# == VISUALIZATION PARAMETERS ==
+# These parameters determine the details of the visualizations that will be created as part of the 
+# artifacts of this experiment.
+
+# :param PLOT_UMAP:
+#       This boolean flag determines whether the UMAP visualization of the graph embeddings should be
+#       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
+#       artifact of the experiment.
+PLOT_UMAP: bool = True
 
 __DEBUG__ = True
 
@@ -124,7 +189,15 @@ experiment = Experiment(
 def load_dataset(e: Experiment,
                  path: str,
                  ) -> dict:
+    """
+    This hook takes a local path to a (visual graph) dataset as the only argument and is then 
+    responsibe for loading and returning that dataset as a index_data_map.
     
+    Additionally, this function has to set up the experiment values "node_dim", "edge_dim" and "out_dim"
+    based on the dataset that has been loaded.
+    
+    This default implementation uses the default VisualGraphDatasetReader to load the dataset from the disk.
+    """
     reader = VisualGraphDatasetReader(
         path=path,
         logger=e.logger,
@@ -146,7 +219,12 @@ def load_dataset(e: Experiment,
 def load_model(e: Experiment,
                path: str
                ) -> Megan:
+    """
+    This hook receives a local file system path as the only argument and is supposed to load the 
+    MEGAN model from that path and return the instance.
     
+    This standard implementation just loads the default Megan torch implementation
+    """
     model = Megan.load_from_checkpoint(path)
     return model
 
@@ -160,84 +238,63 @@ def optimize_prototype(e: Experiment,
                        cluster_embeddings: np.ndarray,
                        **kwargs,
                        ) -> dict:
+    """
+    This hook receives the model, the channel index, processing a list of graphs and a list of cluster embeddings 
+    as parameters and the purpose is to use all that information for somehow derive a cluster prototype in the format 
+    of a single graph dict element.
     
-    # For the embedding objective function we need some kind of anchor location to which we want to 
-    # minimize the distance. For this we are simply going to use the cluster centroid.
-    anchor = np.mean(cluster_embeddings, axis=0)
-    
-    # In this section we assemble the initial population for the optimization of the prototype. In fact, 
-    # in this use case, it is possible to already assemble a very good initial population by simply using 
-    # the subgraphs which are already highlighted by the explanation masks of the cluster members. These 
-    # should by themselves already be very close to the ideal cluster prototype and most likely only 
-    # need minor refinements through the GA optimization.
-    num_initial = min(e.INITIAL_POPULATION_SAMPLE, len(cluster_embeddings))
-    elements_initial = []
-    for graph in random.sample(cluster_graphs, k=num_initial):
-        
-        # In the very first step we need to binarize the node explanation mask by using a simple 
-        # threshold.
-        node_mask = (graph['node_importances'][:, channel_index] > 0.5).astype(int)
-        
-        # Since the explanation mask tends to be too sparse in many situations we perform a one-hop expansion 
-        # of this mask here. So that function will propagate the mask label to all the nodes that are currently 
-        # adjacent to at least one other mask node.
-        node_mask = graph_expand_mask(graph, node_mask, num_hops=2)
-        
-        # Then we only want to extract connected subgraphs. But by the explanation mask alone it is not certain 
-        # that all the masked nodes are connected. So here we use this function which determines all the 
-        # connected regions for the masked part of the graph and ultimately decide to only use the largest 
-        # of those.
-        region_mask = graph_find_connected_regions(graph, node_mask)
-        regions = [v for v in set(region_mask) if v > -1]
-        # Although it should not happen, it is still possible that the explanation mask for individual 
-        # elements are empty which will also lead this regions list to be empty. To avoid errors we 
-        # need to skip the elements for which that is the case.
-        if not regions:
-            continue
-        
-        # Here we sort the regions descending by size so that we can later select only the largest 
-        # region for the subgraph extraction.
-        regions.sort(key=lambda r: np.sum((region_mask == r).astype(int)), reverse=True)
+    The default implementation of this hook is to simply return None which indicates that no prototype was or could be 
+    created.
+    """
+    return None
 
-        mask = (region_mask == regions[0]).astype(int)
-        if np.sum(mask) < 2:
-            continue
+
+@experiment.hook('prototype_hypothesis', replace=False, default=False)
+def prototype_hypothesis(e: Experiment,
+                         value: str,
+                         image_path: str,
+                         channel_index: int,
+                         **kwargs,
+                         ) -> t.Optional[str]:
+    """
+    This hook takes various information about the prototype and the concept cluster as parameters and 
+    is supposed to generate some kind of natural language hypothesis about the causal structure property 
+    relationships that could be underlying to this concept.
+    
+    This generation is usually accomplished by a large language model such as OpenAI's GPT.
+    
+    The standard implementation of this hook just returns None, which indicates that no suitable hypothesis
+    could be generated for the target concept cluster. This is because the generation of the hypothesis is 
+    heavily domain dependent and a generic implementation is not possible.
+    
+    :returns: Either None (in which case it is ignored) or a string to be included as the hypothesis.
+    """
+    e.log(' * skipping hypothesis generation for prototype')
+    return None
+
+
+@experiment.hook('describe_prototype', replace=False, default=False)
+def describe_prototype(e: Experiment,
+                       value: str,
+                       image_path: str,
+                       ) -> str:
+    
+    try:
+        description, _ = describe_color_graph(
+            api_key=e.OPENAI_KEY,
+            image_path=image_path,
+        )
+        print(description)
+        return (
+            f'Prototoype Representation: {value}\n'
+            f'GPT-4 Description: {description}'
+        )
         
-        sub_graph, _ , _ = extract_subgraph(graph, mask)
-    
-        elements_initial.append({
-            'graph': sub_graph,
-            'value': processing.unprocess(sub_graph)
-        })
-    
-    # This function will execute the actual genetic optimization algorithm to create graph prototypes
-    # that are as close to the cluster centroid (==anchor) as possible.
-    element, history = genetic_optimize(
-        fitness_func=lambda graphs: embedding_distance_fitness(
-            graphs=graphs,
-            model=model,
-            channel_index=channel_index,
-            anchor=anchor,
-            node_factor=0.002,
-            edge_factor=0.002,
-        ),
-        sample_func=lambda: random.choice(elements_initial),
-        mutation_funcs=[
-            #mutate_add_node,
-            mutate_modify_node,
-            mutate_remove_node,
-            mutate_remove_node,
-            #mutate_add_edge,
-            mutate_remove_edge,
-        ],
-        num_epochs=50,
-        population_size=1_000,
-        elite_ratio=0.1,
-        refresh_ratio=0.2,
-        logger=e.logger,
-    )
-    
-    return element
+    except Exception as exc:
+        e.log(f'error "{exc}" while describing the prototype - skipping!')
+        # traceback.print_exc()
+        
+        return 'No description generated.'
 
 
 @experiment
@@ -298,8 +355,15 @@ def experiment(e: Experiment):
     e.log('updating the dataset...')
     # To make it easier going forward we will actually attach all the information gained from this 
     # model forward pass to the dataset structure itself (to the graph dicts)
-    for graph, info, dev in zip(graphs, infos, deviations):
+    for index, graph, info, dev in zip(indices, graphs, infos, deviations):
         
+        # 31.01.24
+        # Had to add this conditional only due to backwards compatibility issues with the old visual graph 
+        # datasets where the "repr" key was not yet part of the metadata.
+        metadata = index_data_map[index]['metadata']
+        if 'repr' in metadata:
+            graph['graph_repr'] = metadata['repr']
+            
         # graph_output: (O, )
         graph['graph_output'] = info['graph_output']
         # graph prediction is supposed to be a single value that determines the overall prediction of the 
@@ -328,7 +392,18 @@ def experiment(e: Experiment):
         if e.DATASET_TYPE == 'regression':
             graph['graph_fidelity'] = np.array([-dev[0, 0], dev[0, 1]])
         elif e.DATASET_TYPE == 'classification':
-            graph['graph_fidelity'] = np.diag(dev)
+            matrix = np.array(dev)
+            mask = 1.0 - np.eye(info['graph_output'].shape[0])
+            # graph['graph_fidelity'] = np.diag(matrix) - np.sum(matrix * mask, axis=1)
+            graph['graph_fidelity'] = np.diag(matrix)
+            
+    # ~ saving graphs
+    # The graphs were just updated with additional information from the prediction. These graph structures might be needed in 
+    # the analysis as well so we will save them as a separate experiment artifact.
+    e.log('saving the raw graph data as a JSON file...')
+    graphs_path = os.path.join(e.path, 'graphs.json')
+    with open(graphs_path, 'w') as file:
+        json.dump(graphs, file, cls=NumericJsonEncoder)
     
     # Now we calculate the concept clusters separately for each of the explanation channels of the model.
     e.log('starting concept clustering...')
@@ -356,7 +431,8 @@ def experiment(e: Experiment):
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=e.MIN_CLUSTER_SIZE,
             min_samples=e.MIN_SAMPLES,
-            metric=cosine,
+            metric='manhattan',
+            cluster_selection_method=e.CLUSTER_SELECTION_METHOD,
         )
         # labels: (B, )
         # This is an array that contains the cluster indices for every element of the dataset. It assigns an integer 
@@ -379,15 +455,24 @@ def experiment(e: Experiment):
             
             # cluster_graph_embeddings: (B_cluster, D)
             cluster_graph_embeddings = graph_embeddings[mask]
+            # cluster_centroid: (D, )
+            cluster_centroid = np.mean(cluster_graph_embeddings, axis=0)
             # cluster_indices: (B_cluster, )
             cluster_indices = channel_indices[mask]
             cluster_index_tuples = [(i, channel_index) for i in cluster_indices]
             cluster_graphs = [index_data_map[i]['metadata']['graph'] for i in cluster_indices]
             cluster_image_paths = [index_data_map[i]['image_path'] for i in cluster_indices]
             
+            if e.DATASET_TYPE == 'regression':
+                cluster_contribution = np.mean([graph['graph_deviation'][0, channel_index] for graph in cluster_graphs])
+            elif e.DATASET_TYPE == 'classification':
+                cluster_contribution = np.mean([graph['graph_deviation'][channel_index, channel_index] for graph in cluster_graphs])   
+            
             info = {
+                'channel_index':        channel_index,
                 'index':                cluster_index,
                 'embeddings':           cluster_graph_embeddings,
+                'centroid':             cluster_centroid,
                 'index_tuples':         cluster_index_tuples,
                 'graphs':               cluster_graphs,
                 'image_paths':          cluster_image_paths,
@@ -395,39 +480,253 @@ def experiment(e: Experiment):
                 'color':                e.CHANNEL_INFOS[channel_index]['color'],
             }
             
+            e.log(f' ({cluster}/{num_clusters}) - contribution: {cluster_contribution:.2f}')
             # Optionally it is also possible to derive an approximation for the prototype of the cluster by doing 
             # an optimization scheme. However, this will require quite some time so it can be skipped as well.
             if e.OPTIMIZE_CLUSTER_PROTOTYPE:
-                e.log(f' ({cluster}/{num_clusters}) optimizing prototype...')
-                cluster_prototype: dict = e.apply_hook(
-                    'optimize_prototype',
-                    model=model,
-                    channel_index=channel_index,
-                    processing=processing,
-                    cluster_graphs=cluster_graphs,
-                    cluster_embeddings=cluster_graph_embeddings,
-                )
 
-                fig, _ = processing.visualize_as_figure(
-                    value=cluster_prototype['value'],
-                    graph=cluster_prototype['graph'],
-                    width=1000,
-                    height=1000,
-                )
-                prototype_path = os.path.join(e.path, f'prototype__cl{cluster_index:02d}.png')
-                fig.savefig(prototype_path)
-                
-                info['prototype'] = {
-                    'path': prototype_path,
-                    'description': 'No description generated.', 
-                }
+                try:
+                    e.log(f' ({cluster}/{num_clusters}) optimizing prototype...')
+                    # There are rare cases where this also fails due to the initial elements being empty for example
+                    # in that case we 
+                    cluster_prototype: dict = e.apply_hook(
+                        'optimize_prototype',
+                        model=model,
+                        channel_index=channel_index,
+                        processing=processing,
+                        cluster_graphs=cluster_graphs,
+                        cluster_embeddings=cluster_graph_embeddings,
+                    )
+                    
+                    # 29.01.24
+                    # So actually there is a chance that this visualization step may fail for some very exotic SMILES.
+                    fig, _ = processing.visualize_as_figure(
+                        value=cluster_prototype['value'],
+                        graph=cluster_prototype['graph'],
+                        width=1000,
+                        height=1000,
+                    )
+                    prototype_path = os.path.join(e.path, f'prototype__cl{cluster_index:02d}.png')
+                    fig.savefig(prototype_path)
+                    plt.close(fig)
+                    
+                    prototype = {
+                        'image_path': prototype_path,
+                    }
+                    info['prototypes'] = [prototype]
+                    
+                    # It is also possible to specifically disable/enable the description of the prototypes
+                    if e.DESCRIBE_PROTOTYPE:
+                    
+                        # :hook describe_prototype:
+                        #       Given the string representation of the prototype and the path to the visualization of the 
+                        #       prototype, this hook is supposed to return a string description for the prototype.
+                        #       which will be included in the concept report.
+                        description = e.apply_hook(
+                            'describe_prototype',
+                            value=cluster_prototype['value'],
+                            image_path=prototype_path,
+                        )
+                        info['description'] = description
+                        
+                    if e.HYPOTHESIZE_PROTOTYPE:
+                        # :hook prototype_hypothesis:
+                        #       Given the string representation of the prototype, the path to the visualization and the 
+                        #       description string, this hook is supposed to return a string hypothesis for the prototype.
+                        #       This hypothesis is supposed to provide a starting point about the causal structure property 
+                        #       relationship of the prototype & the cluster as a whole.
+                        hypothesis = e.apply_hook(
+                            'prototype_hypothesis', 
+                            value=cluster_prototype['value'],
+                            image_path=prototype_path,
+                            channel_index=channel_index,
+                            contribution=cluster_contribution,
+                        )
+                        # Thers is a chance that the hypothesis generation fails or is not implemented for a specific 
+                        # target domain. So only if a textual hypothesis is actually returned we want to include it in
+                        # the cluster info.
+                        if hypothesis is not None:
+                            info['hypothesis'] = hypothesis
+                    
+                except Exception as exc:
+                    e.log(f'error "{exc}" while optimizing the prototype - skipping!')
+                    traceback.print_exc()
             
             cluster_index += 1
             cluster_infos.append(info)
+    
+    print(cluster_infos[0].keys())
             
     # We definitely want to store the cluster infos to the experiment storage so that we can access them 
     # later on during the analysis as well.
     #e['cluster_infos'] = cluster_infos
+    
+    # Only if configured we are actually going to sort the clusters by their similarity. This similarity sorting 
+    # works like this: Within each channel (!) we are going to start with the first cluster and then we are going
+    # to find the cluster that is most similar to it. We are going to repeat this process until all clusters are
+    # are added to the new list.
+    if e.SORT_SIMILARITY:
+        
+        e.log('sorting clusters by similarity...')
+        cluster_infos_sorted = []
+        for k in range(e['num_channels']):
+            infos = [info for info in cluster_infos if info['channel_index'] == k]
+            
+            info = infos.pop(0)
+            cluster_infos_sorted.append(info)
+            
+            while len(infos) != 0:
+                
+                centroid = info['centroid']
+                centroid_distances = pairwise_distances(
+                    np.expand_dims(centroid, axis=0),
+                    [i['centroid'] for i in infos],
+                    metric='manhattan',
+                )
+                
+                index = np.argmin(centroid_distances[0])
+                info = infos.pop(index)
+                cluster_infos_sorted.append(info)
+        
+        cluster_infos = cluster_infos_sorted
+        
+    for index, info in enumerate(cluster_infos):
+        info['index'] = index
+    
+    # ~ Clustering metrics
+    
+    e.log('calculating clustering metrics...')
+    for channel_index in range(e['num_channels']):
+            
+        infos = [info for info in cluster_infos if info['channel_index'] == channel_index]
+        
+        embeddings = []
+        labels = []
+        for index, info in enumerate(infos):
+            embeddings += info['embeddings'].tolist()
+            labels += [index for _ in info['embeddings']]
+        
+        embeddings = np.array(embeddings)
+        labels = np.array(labels)
+        
+        # calculating the silhouette score
+        # The silhouette score is a measure of how similar an object is to its own cluster (cohesion) compared to
+        # other clusters (separation). The silhouette ranges from -1 to 1, where a high value indicates that the
+        # object is well matched to its own cluster and poorly matched to neighboring clusters.
+        sil_value = silhouette_score(embeddings, labels)
+        dbi_value = davies_bouldin_score(embeddings, labels)
+        
+        e[f'{channel_index}/silhouette'] = sil_value
+        e[f'{channel_index}/dbi'] = dbi_value
+        
+        e.log(f'channel {channel_index}'
+              f' - silhouette: {sil_value:.3f}'
+              f' - dbi: {dbi_value:.3f}')
+    
+    # ~ Dimensionality reduction
+    # In this section we want to create perform a dimensionality reduction on the graph embedding latent space 
+    # so that we can get somewhat of a visual understanding of the clustering that is going on there. For 
+    # this purpose we are using UMAP - specifically we are using a separate UMAPing process for each of the 
+    # explanation channels.
+    
+    if e.PLOT_UMAP:
+        
+        e.log(f'starting to create {e["num_channels"]} UMAP visualizations...')
+        fig, rows = plt.subplots(
+            ncols=e['num_channels'],
+            nrows=2,
+            figsize=(20, 20),
+            squeeze=False,
+        )
+        
+        for channel_index in range(e['num_channels']):
+            e.log(f'creating UMAP visualization for channel {channel_index}...')
+            
+            # As a first step we want to filter the graphs. So we dont actually want to use the embeddings of 
+            # all the graphs for the mapping but only a subset of them according to the fidelty threshold.
+            # because the embeddings with really low fidelity dont make any sense to look at anyways and would 
+            # only "pollute" the visualization.
+            channel_graphs = [
+                graph
+                for graph in graphs
+                if graph['graph_fidelity'][channel_index] > e.FIDELITY_THRESHOLD
+            ]
+            
+            # graph_embeddings: (B, D)
+            embeddings = np.array([graph['graph_embedding'][:, channel_index] for graph in channel_graphs])
+            e.log(f' * filtered {len(channel_graphs)} elements from {len(graphs)}')
+            
+            mapper = umap.UMAP(
+                n_neighbors=100,
+                min_dist=0.0,
+                n_components=2,
+                metric='manhattan',
+                repulsion_strength=1.0,
+            )
+            mapped = mapper.fit_transform(embeddings)
+            
+            # Then in the first row, we ware going to just plot the latent space in raw format without indicating the 
+            # actual clustering results.
+            ax_raw = rows[0][channel_index]
+            ax_raw.scatter(
+                mapped[:, 0], mapped[:, 1],
+                color=e.CHANNEL_INFOS[channel_index]['color'],
+                linewidths=0.0,
+                s=10,
+                alpha=0.25,
+            )
+            ax_raw.set_title(f'UMAP Reduced Explanation Embeddings\n'
+                             f'Channel {channel_index} - {e.CHANNEL_INFOS[channel_index]["name"]}')
+            
+            # In this second row we are going to plot the clustering results which includes the elements 
+            # that were chosen as part of the clusters as well as the centroids of those clusters.
+            e.log(' * plotting clustering results')
+            ax_cls = rows[1][channel_index]
+            ax_cls.set_title('HDBSCAN Clusters and Centroids')
+            
+            ax_cls.scatter(
+                mapped[:, 0], mapped[:, 1],
+                color='lightgray',
+                linewidths=0.0,
+                s=10,
+                zorder=-10,
+            )
+            
+            infos = [info for info in cluster_infos if info['channel_index'] == channel_index]
+            for info in infos:
+                
+                embeddings = info['embeddings']
+                embeddings_mapped = mapper.transform(embeddings)
+                ax_cls.scatter(
+                    embeddings_mapped[:, 0], embeddings_mapped[:, 1],
+                    color='lightgreen',
+                    linewidths=0.0,
+                    s=5,
+                )
+                
+                centroid = info['centroid']
+                centroid_mapped = mapper.transform(np.expand_dims(centroid, axis=0))
+                ax_cls.scatter(
+                    centroid_mapped[0, 0], centroid_mapped[0, 1],
+                    color='black',
+                    marker='x',
+                    zorder=10,
+                )
+                ax_cls.text(
+                    centroid_mapped[0, 0], centroid_mapped[0, 1],
+                    f'({info["index"]})',
+                    zorder=10,
+                )
+        
+        fig_path = os.path.join(e.path, 'umap.png')
+        fig.savefig(fig_path, dpi=300)
+    
+    # ~ creating the concept report
+    # Based on the raw information about the extracted concept clusters we now want to generate a PDF report 
+    # file which presents that information to a user in a more structured way.
+    # The create_concept_cluster_report function from the visualization module can be used for this purpose. 
+    # it will take the concept_infos list as input and then create a PDF report file from that in addition 
+    # to other information. 
     
     e.log('creating the concept report...')
     report_path = os.path.join(e.path, 'concept_report.pdf')
@@ -441,7 +740,53 @@ def experiment(e: Experiment):
         cache_path=cache_path,
         examples_type='centroid',
         num_examples=16,
+        distance_func=cosine,
+        normalize_centroid=True,
     )
-
+    
+    # ~ writing concepts to disk
+    # The ConceptWriter class can be used to write all the concept related information to the disk as a special 
+    # self-contained data structure. 
+    
+    e.log('saving the concept clustering data...')
+    concepts_path = os.path.join(e.path, 'concepts')
+    os.mkdir(concepts_path)
+    
+    writer = ConceptWriter(
+        path=concepts_path,
+        processing=processing,
+        logger=e.logger,
+    )
+    # writer.write(cluster_infos)
+    
+    
+@experiment.analysis
+def analysis(e: Experiment):
+    
+    e.log('starting analysis...')
+    
+    e.log('loading the graph data...')
+    graphs_path = os.path.join(e.path, 'graphs.json')
+    with open(graphs_path, 'r') as file:
+        graphs = json.load(file)
+        
+    # The graph representation's values are supposed to be numpy arrays. After loading it from the disk
+    # the values will only be nested lists though, so therefore we need to convert them into numpy arrays
+    for graph in graphs:
+        for key, value in graph.items():
+            if isinstance(value, list):
+                graph[key] = np.array(value)
+    
+    e.log(f'loaded {len(graphs)} graphs from disk')
+    
+    return
+    e.log('loading the concept data...')
+    concept_path = os.path.join(e.path, 'concepts')
+    reader = ConceptReader(
+        path=concept_path,
+        logger=e.logger,
+    )
+    concept_infos: list[dict] = reader.read()
+    e.log(f'loaded information about {len(concept_infos)} concepts')    
 
 experiment.run_if_main()

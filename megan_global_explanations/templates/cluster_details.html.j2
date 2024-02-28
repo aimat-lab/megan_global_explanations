@@ -17,44 +17,6 @@
         Cluster {{ index }}, from importance channel <em>{{ channel_index.active }} ({{ name|default('-') }})</em>, represents a motif consisting of <em>{{ '%.1f' % mask_size.avg }} (&#177;{{ '%.1f' % mask_size.std }})</em> nodes.
         The concept is generally associated with an impact of <em>{{ '%.1f' % contribution.avg }} (&#177;{{ '%.1f' % contribution.std }})</em> on the prediction outcome.
     </div>
-    
-    <!--    CLUSTER PROTOTYPE 
-            The cluster prototype section is optional and will only be displayed if the "prototype" field is actually part of the 
-            template context. This section will mainly display the visualization of the cluster prototype graph and additionally 
-            dispaly the description of that prototype. -->
-
-    {% if prototype %}
-    <h2>Prototype</h2>
-
-    <div class="information">
-        &#9432; This section shows the cluster prototype. A "prototype" in this case is a graph which is meant to be representative of the cluster as a whole. 
-        In that sense it is supposed to be the subgraph motif which is the common theme among the cluster members individual explanations. The prototype 
-        consists of a visualization and a natural language description. The prototype is automatically approximated through a non-deterministic process
-        and thus may not be completely accurate. Interpretation of results should be made cautiously.
-    </div>
-
-    <div class="prototype-container">
-        <div class="prototype-image">
-             <img src="file://{{ prototype.path }}">
-        </div>
-        <div class="text prototype-description">
-            {{ prototype['description'] }}
-        </div>
-    </div>
-
-    <!--    The prototype hypothesis is a string which provides a hypothesis about WHY a certain cluster is associated with a certain 
-            effect. Obviously this is quite hard which is why it is optional and does not have to be provided -->
-    {% if 'hypothesis' in prototype %}
-    <h2>Prototype Hypothesis</h2>
-    <div class="text prototype-hypothesis">
-        {{ prototype['hypothesis'] }}
-    </div>
-    {% endif %}
-
-    <!--    If there is a prototype defined then we want to do a page break here so that the entire first page of the report is used 
-            for prototype related content and then the second page after that will be used for the statistics -->
-    <p style="page-break-before: always"></p>
-    {% endif %}
 
     <h2>Properties</h2>
 
@@ -82,7 +44,14 @@
 
     </div>
 
-    <h2>Aggregated Statistics</h2>
+    <h2>Member Statistics</h2>
+
+    <div class="information">
+        &#9432; This section shows various statistical distributions about some aspects of the various cluster members. As distributions over 
+        the cluster members, the vertical axis always shows the number of elements associated with a certain properties and the horizontal axis 
+        shows the different values that the properties can take.
+    </div>
+
     <div class="statistics">
         <div class="stat-item">
             <div>Prediction Impact Distribution</div>
@@ -123,5 +92,56 @@
         </div>
         {% endfor %}
     </div>
+
+    <!--    CLUSTER PROTOTYPE 
+            The cluster prototype section is optional and will only be displayed if the "prototype" field is actually part of the 
+            template context. This section will mainly display the visualization of the cluster prototype graph and additionally 
+            dispaly the description of that prototype. -->
+
+    {% if prototypes %}
+
+    <p style="page-break-before: always"></p>
+
+    <h2>Prototype</h2>
+
+    <div class="information">
+        &#9432; This section shows the cluster prototype. A "prototype" in this case is a graph which is meant to be representative of the cluster as a whole. 
+        In that sense it is supposed to be the subgraph motif which is the common theme among the cluster members individual explanations. The prototype 
+        consists of a visualization and a natural language description. The prototype is automatically approximated through a non-deterministic process
+        and thus may not be completely accurate.
+    </div>
+
+    {% for prototype in prototypes %}
+    <div class="prototype-container">
+        <div class="prototype-image">
+                <img src="file://{{ prototype.image_path }}">
+        </div>
+        <div class="text prototype-description">
+            {{ prototype['description'] | replace('\n', '<br>') | safe }}
+        </div>
+    </div>
+    {% endfor %}
+
+    <!--    The prototype hypothesis is a string which provides a hypothesis about WHY a certain cluster is associated with a certain 
+            effect. Obviously this is quite hard which is why it is optional and does not have to be provided -->
+    {% if hypothesis %}
+    <h2>Prototype Hypothesis</h2>
+
+    <div class="information">
+        &#9432; This section displays a hypothesis about a possible underlying causal reasoning behind the identified concept and its 
+        contribution to the prediction outcome. This hypothesis is automatically generated by a language model which receives a reduced 
+        representation of the concept prototype. Therefore, the hypothesis is likely not entirely accurate and should be interpreted with 
+        caution.
+    </div>
+
+    <div class="text prototype-hypothesis">
+        {{ hypothesis | replace('\n', '<br>') | safe }}
+    </div>
+    {% endif %}
+
+    <!--    If there is a prototype defined then we want to do a page break here so that the entire first page of the report is used 
+            for prototype related content and then the second page after that will be used for the statistics -->
+    <p style="page-break-before: always"></p>
+    {% endif %}
 
 </div>

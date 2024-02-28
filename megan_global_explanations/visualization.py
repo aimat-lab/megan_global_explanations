@@ -119,6 +119,8 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
                                   plot_edge_importances: t.Union[str, t.Callable] = 'background',
                                   cache_path: t.Optional[str] = None,
                                   distance_func: t.Callable = euclidean,
+                                  normalize_centroid: bool = False,
+                                  **kwargs,
                                   ) -> None:
     """
     Each cluster details dict has to consist of the following items:
@@ -151,6 +153,8 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             # ~ Basic cluster statistics
             num_elements = len(data['graphs'])
             channel_indices = [k for i, k in data['index_tuples']]
+            # From all the individual channel indices we can create a soft assignment to a single channel
+            channel_index = round(np.mean(channel_indices))
             
             # in the first step we want to create aggregation statistics for all the members of the cluster 
             # which most importantly includes the mask size and contribution to the prediction outcome
@@ -182,6 +186,8 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.axvline(contributions_mean, color='black', label=f'avg: {contributions_mean:.2f}')
             x_min, x_max = ax.get_xlim()
             ax.set_xlim([min(0, x_min * lim_factor), max(0, x_max * lim_factor)])
+            ax.set_xlabel(f'Channel {channel_index} Fidelity')
+            ax.set_ylabel(f'Number of Cluster Elements')
             ax.legend()
             contribution_path = os.path.join(temp_path, f'{cluster_index:02d}_contribution.png')
             fig.savefig(contribution_path, bbox_inches='tight')
@@ -196,6 +202,8 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.axvline(mask_sizes_mean, color='black', label=f'avg: {mask_sizes_mean:.2f}')
             x_min, x_max = ax.get_xlim()
             ax.set_xlim([min(0, x_min * lim_factor), max(0, x_max * lim_factor)])
+            ax.set_xlabel(f'Number of Nodes in Explanation Mask')
+            ax.set_ylabel(f'Number of Cluster Elements')
             ax.legend()
             mask_size_path = os.path.join(temp_path, f'{cluster_index:02d}_mask_size.png')
             fig.savefig(mask_size_path, bbox_inches='tight')
@@ -213,6 +221,8 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.axvline(predictions_mean, color='black', label=f'avg: {predictions_mean:.2f}')
             x_min, x_max = ax.get_xlim()
             ax.set_xlim([min(0, x_min * lim_factor), max(0, x_max * lim_factor)])
+            ax.set_xlabel(f'Model Prediction')
+            ax.set_ylabel(f'Number of Cluster Elements')
             ax.legend()
             predictions_path = os.path.join(temp_path, f'{cluster_index:02d}_predictions.png')
             fig.savefig(predictions_path, bbox_inches='tight')
@@ -224,6 +234,14 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             # The centroid is just the mean of all those embeddings
             # centroid: (1, D)
             centroid = np.mean(embeddings, axis=0)
+            # 31.01.24 
+            # In some situations it makes sense to additionally normalize the centroid for example when the embeddings 
+            # themselves are activated to be on the unit sphere then it would not make sense for the centroid not to be 
+            # on it - yet a simple mean of all the embeddings would not guarantee the centroid also to be on the 
+            # unit sphere.
+            if normalize_centroid:
+                centroid = centroid / np.linalg.norm(centroid)
+            
             # Now with the centroid we can calculate the distances of all the embeddings and then create a plot that 
             # shows the distribution of those. this will be interesting to judge the homogenity of the cluster.
             centroid_distances = np.array([distance_func(centroid, emb) for emb in embeddings])
@@ -235,6 +253,8 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             ax.axvline(centroid_distances_mean, color='black', label=f'avg: {centroid_distances_mean:.2f}')
             x_min, x_max = ax.get_xlim()
             ax.set_xlim([min(0, x_min * lim_factor), max(0, x_max * lim_factor)])
+            ax.set_xlabel(f'Distance to Centroid ({distance_func.__name__})')
+            ax.set_ylabel(f'Number of Cluster Elements')
             ax.legend()
             centroid_distances_path = os.path.join(temp_path, f'{cluster_index:02d}_centroid_distances.png')
             fig.savefig(centroid_distances_path, bbox_inches='tight')
@@ -280,7 +300,7 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
                     ax=ax,
                     g=graph,
                     node_positions=np.array(graph['node_positions']),
-                    edge_importances=np.array(graph['edge_importances'])[:, k]
+                    edge_importances=np.array(graph['edge_importances'])[:, k],
                 )
                 
                 example_path = os.path.join(temp_path, f'{cluster_index:02d}_example_{i}.png')

@@ -19,6 +19,11 @@ LOG.addHandler(logging.NullHandler())
 if LOG_TESTING:
     LOG.addHandler(logging.StreamHandler(sys.stdout))
     
+# For some functions we require an OpenAI key to be able to query the OpenAI API, so we load it from the
+# environment variables here. Specifically from the .env file that is located in the same folder as this
+# module.
+OPENAI_KEY = config('OPENAI_KEY', default=None)    
+
     
 def load_mock_clusters() -> t.List[dict]:
     """
@@ -54,3 +59,8 @@ def load_mock_vgd() -> dict:
     reader = VisualGraphDatasetReader(path=path)
     index_data_map = reader.read()
     return index_data_map
+
+
+# Here I want to load the .env file in the same folder as this module and expose all the env variables
+# as a dict ENV_VARS
+

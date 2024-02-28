@@ -10,10 +10,17 @@
    :target: https://www.python.org/
 
 =============
-Project Title
+Global Concept-Explanations for the Self-Explaining MEGAN Graph Neural Network
 =============
 
-Write a short project description / use the abstract of your publication !
+This package implements the functionality needed to extract global concept-based explanations from the recently published 
+MEGAN_ graph neural network model.
+
+❓ What are Global Concept Explanations?
+========================================
+
+to be done
+
 
 Installation
 ============

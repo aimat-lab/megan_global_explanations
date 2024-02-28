@@ -57,12 +57,52 @@ FIDELITY_THRESHOLD: float = 0.5
 # :param MIN_CLUSTER_SIZE:
 #       This parameter determines the min cluster size for the HDBSCAN algorithm. Essentially 
 #       a cluster will only be recognized as a cluster if it contains at least that many elements.
-MIN_CLUSTER_SIZE: int = 25
+MIN_CLUSTER_SIZE: int = 10
 # :param MIN_SAMPLES:
 #       This cluster defines the HDBSCAN behavior. Essentially it determines how conservative the 
 #       clustering is. Roughly speaking, a larger value here will lead to less clusters while 
 #       lower values tend to result in more clusters.
-MIN_SAMPLES: int = 50
+MIN_SAMPLES: int = 10
+
+# == PROTOTYPE OPTIMIZATION PARAMETERS ==
+# These parameters configure the process of optimizing the cluster prototype representatation
+
+# :param OPTIMIZE_CLUSTER_PROTOTYPE:
+#       This boolean flag determines whether the prototype optimization should be executed at 
+#       all or not. If this is False, the entire optimization routine will be skipped during the 
+#       cluster discovery.
+OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
+# :param INITIAL_POPULATION_SAMPLE:
+#       This integer number determines the number of initial samples that are drawn from the cluster 
+#       members as the initial population of the prototype optimization GA procedure.
+INITIAL_POPULATION_SAMPLE: int = 200
+# :param OPTIMIZE_PROTOTYPE_POPSIZE:
+#       This integer number determines the population size of the genetic optimization algorithm
+#       that is used to optimize the prototype representation.
+OPTIMIZE_PROTOTYPE_POPSIZE: int = 1000
+# :param OPTIMIZE_PROTOTYPE_EPOCHS:
+#       This integer number determines the number of epochs that the genetic optimization algorithm
+#       will be executed for the prototype optimization.
+OPTIMIZE_PROTOTYPE_EPOCHS: int = 50
+# :param OPENAI_KEY:
+#       This string value has to be the OpenAI API key that should be used for the GPT-4 requests
+#       that will be needed to generate the natural language descriptions of the prototypes.
+OPENAI_KEY: str = os.getenv('OPENAI_KEY')
+# :param DESCRIBE_PROTOTYPE:
+#       This boolean flag determines whether the prototype description should be generated at all
+#       or not. If this is False, the entire description routine will be skipped during the
+#       cluster discovery.
+DESCRIBE_PROTOTYPE: bool = False
+
+# == VISUALIZATION PARAMETERS ==
+# These parameters determine the details of the visualizations that will be created as part of the 
+# artifacts of this experiment.
+
+# :param PLOT_UMAP:
+#       This boolean flag determines whether the UMAP visualization of the graph embeddings should be
+#       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
+#       artifact of the experiment.
+PLOT_UMAP: bool = True
 
 
 __DEBUG__ = True

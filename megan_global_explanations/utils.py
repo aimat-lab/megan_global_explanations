@@ -65,6 +65,21 @@ class CsvString(click.ParamType):
 # == STRING UTILITY ==
 # These are some helper functions for some common string related problems
 
+def safe_int(value: str) -> t.Optional[int]:
+    """
+    Given the string `value` this function will try to convert it to an integer. 
+    If the string is not a valid integer, the function will return None.
+    
+    :param value: The string to be converted to an integer
+    
+    :returns: The integer value of the string or None if the string is not a valid integer
+    """
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def random_string(length: int,
                   chars: string.ascii_letters + string.digits
                   ) -> str:

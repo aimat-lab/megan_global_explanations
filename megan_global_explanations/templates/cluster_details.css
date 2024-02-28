@@ -14,7 +14,8 @@ h2 {
 
 div.text {
     text-align: justify;
-    line-height: 160%;
+    line-height: 150%;
+    font-size: 0.9em;
 }
 
 
