@@ -311,6 +311,55 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
                     'path': example_path,
                     'title': f'{i}'  
                 })
+                
+            # ~ prototype visualizations
+            # Optionally a cluster may also specify one or more "prototypes" these are subgraphs which are supposed 
+            # to represent the underlying pattern of the concept cluster more clearly. 
+            # These prototypes are passed in as visual graph elements in the "prototypes" list. Here we do a pre-processing 
+            # were we create an image that also shows the models explanations for that prototype graph in addition to 
+            # the raw graph image.
+            
+            if 'prototypes' in data:
+                
+                for i, _data in enumerate(data['prototypes']):
+                    graph = _data['metadata']['graph']
+                    image_path = _data['image_path']
+                    
+                    # There might be the chance that the prototype graphs do not contain explanation masks as part of their 
+                    # attributes in which case we will skip the procedure to visualize those.
+                    if ('node_importances' not in graph) or ('edge_importances' not in graph):
+                        continue
+                    
+                    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=fig_size)
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                    ax.spines['bottom'].set_visible(False)
+                    ax.spines['left'].set_visible(False)
+                    draw_image(ax, image_path)
+                    
+                    plot_node_importances_func = PLOT_NODE_IMPORTANCES_OPTIONS[plot_node_importances]
+                    plot_node_importances_func(
+                        ax=ax,
+                        g=graph,
+                        node_positions=np.array(graph['node_positions']),
+                        node_importances=np.array(graph['node_importances'])[:, k]
+                    )
+                    
+                    plot_edge_importances_func = PLOT_EDGE_IMPORTANCES_OPTIONS[plot_edge_importances]
+                    plot_edge_importances_func(
+                        ax=ax,
+                        g=graph,
+                        node_positions=np.array(graph['node_positions']),
+                        edge_importances=np.array(graph['edge_importances'])[:, k],
+                    )
+                    
+                    prototype_path = os.path.join(temp_path, f'{cluster_index:02d}_prototype_{i}.png')
+                    fig.savefig(prototype_path, bbox_inches='tight')
+                    plt.close(fig)
+                    
+                    # Now we need to add that new path to the metadata of the prototype itself so that we can then 
+                    # later access this path during the actual rendering of the report HTML.
+                    _data['path'] = prototype_path
             
             # ~ Creating the html
             # After we have made all the previous computations we can create the HTML string that 

@@ -1,4 +1,5 @@
 import os
+import json
 import typing as t
 
 import numpy as np
@@ -6,6 +7,55 @@ from visual_graph_datasets.processing.base import ProcessingBase
 from visual_graph_datasets.processing.colors import ColorProcessing
 
 import megan_global_explanations.typing as tg
+
+
+class MockModel():
+    """
+    This is a mock implementation for testing purposes. This class is supposed to emulate the external interface of a 
+    ``Megan`` model. Most importantly the ``forward_graphs`` method is supposed to be implemented such that it returns
+    a list of dictionaries where each dictionary contains keys that describe the output of the model regarding the 
+    output of the model, the embeddings and the explanations. 
+    
+    Additionally to be used for testing the class also implements the ``save`` and ``load_from_checkpoint`` methods.
+    These simply save the parameters of the constructor as a json format and then load it accordingly again.
+    """
+    def __init__(self,
+                 num_channels: int = 2,
+                 embedding_dim: int = 64,
+                 ) -> None:
+        self.num_channels = num_channels
+        self.embedding_dim = embedding_dim
+        
+        self.params = {
+            'num_channels': self.num_channels,
+            'embedding_dim': self.embedding_dim,
+        }
+        
+    def forward_graphs(self, graphs: t.List[dict]):
+        infos = []
+        for graph in graphs:
+            info = {
+                'graph_output':     np.random.random(),
+                'graph_embedding':  np.random.random((self.embedding_dim, )),
+                'node_importance':  np.random.random((len(graph['node_indices']), self.num_channels)),
+                'edge_importance':  np.random.random((len(graph['edge_indices']), self.num_channels)),
+            }
+            infos.append(info)
+            
+        return infos
+    
+    def save(self, path: str):
+        with open(path, mode='w') as file:
+            json.dump(self.params, file)
+            
+    @classmethod
+    def load_from_checkpoint(cls, path: str):
+        if not os.path.exists(path):
+            raise FileNotFoundError('The model checkpoint file does not exist!')
+        
+        with open(path, mode='r') as file:
+            params = json.load(file)
+            return cls(**params)
 
 
 def create_mock_concepts(num: int,
@@ -24,6 +74,7 @@ def create_mock_concepts(num: int,
         }
         
         if prototype_value:
+            
             graph = processing.process(prototype_value)
             concept['prototypes'] = [{
                 'image_path': None,

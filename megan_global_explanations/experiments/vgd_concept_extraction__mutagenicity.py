@@ -71,7 +71,7 @@ CHANNEL_INFOS: t.Dict[int, dict] = {
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the 
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'mutagenicity3.ckpt')
+MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'mutagenicity.ckpt')
 
 # == CLUSTERING PARAMETERS ==
 # This section determines the parameters of the concept clustering algorithm itself.
@@ -79,7 +79,7 @@ MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'mutagenicity3.ckpt')
 # :param FIDELITY_THRESHOLD:
 #       This float value determines the treshold for the channel fidelity. Only elements with a 
 #       fidelity higher than this will be used as possible candidates for the clustering.
-FIDELITY_THRESHOLD: float = 1.0
+FIDELITY_THRESHOLD: float = 5.0
 # :param MIN_CLUSTER_SIZE:
 #       This parameter determines the min cluster size for the HDBSCAN algorithm. Essentially 
 #       a cluster will only be recognized as a cluster if it contains at least that many elements.

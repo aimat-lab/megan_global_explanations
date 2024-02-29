@@ -104,9 +104,16 @@ def test_create_concept_cluster_report_cache_path_works():
         
 def test_create_cluster_report_prototype_works():
     
+    num_channels = 2
+    num_clusters = 3
+    index_data_map = load_mock_vgd()
+    
     # This function will load a cluster data list from the disk where the dict elements exactly have the 
     # format that is required for the create_concept_cluster_report function
-    cluster_data_list: t.List[dict] = load_mock_clusters()
+    cluster_data_list: t.List[dict] = load_mock_clusters(
+        num_channels=num_channels,
+        num_clusters=num_clusters,
+    )
     
     # Now additionally to that base functionality, we want to test here the optional additional functionality 
     # of providing a cluster prototype as well.
@@ -115,12 +122,13 @@ def test_create_cluster_report_prototype_works():
     # as the image path we are simply choose one of the images that are already used as an example.
     
     for cluster_info in cluster_data_list:
-        path = random.choice(cluster_info['image_paths'])
-        cluster_info['prototype'] = {
-            'path': path,
-            'description': lorem.paragraph(),
-            'hypothesis': lorem.paragraph(),
-        }
+        # We just add a random graph from the cluster as the prototype
+        prototype = random.choice(list(index_data_map.values()))
+        prototype_graph = prototype['metadata']['graph']
+        prototype_graph['node_importances'] = np.random.random(size=(len(prototype_graph['node_indices']), num_channels))
+        prototype_graph['edge_importances'] = np.random.random(size=(len(prototype_graph['edge_indices']), num_channels))
+        
+        cluster_info['prototypes'] = [prototype]
     
     output_path = os.path.join(ARTIFACTS_PATH, 'test_create_concept_cluster_report_prototype_works.pdf')
     create_concept_cluster_report(

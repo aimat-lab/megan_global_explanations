@@ -113,11 +113,15 @@
 
     {% for prototype in prototypes %}
     <div class="prototype-container">
+
+        <!--    prototype.image_path is just the raw prototype image which just shows the graph as it is. prototype.path however
+                is a visualization which also shows the explanation that was created for that prototype during the forward pass 
+                of the model for the corresponding explanation channel. -->
         <div class="prototype-image">
-                <img src="file://{{ prototype.image_path }}">
+            <img src="file://{{ prototype.image_path }}" alt="prototype raw image">
         </div>
-        <div class="text prototype-description">
-            {{ prototype['description'] | replace('\n', '<br>') | safe }}
+        <div class="prototype-image">
+            <img src="file://{{ prototype.path }}" alt="prototype explanation image">
         </div>
     </div>
     {% endfor %}
@@ -133,15 +137,11 @@
         representation of the concept prototype. Therefore, the hypothesis is likely not entirely accurate and should be interpreted with 
         caution.
     </div>
-
-    <div class="text prototype-hypothesis">
-        {{ hypothesis | replace('\n', '<br>') | safe }}
-    </div>
     {% endif %}
 
     <!--    If there is a prototype defined then we want to do a page break here so that the entire first page of the report is used 
             for prototype related content and then the second page after that will be used for the statistics -->
-    <p style="page-break-before: always"></p>
+    
     {% endif %}
 
 </div>

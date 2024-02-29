@@ -1,9 +1,30 @@
+"""
+Extends the base experiment "vgd_concept_extraction". This experiment implements the concept extraction 
+specifically for the aqsoldb dataset for the regression of logS water solubility values.
+"""
 import os
 import pathlib
+import random
+import traceback
 import typing as t
+from copy import deepcopy
 
+import numpy as np
+import visual_graph_datasets.typing as tv
+import rdkit.Chem as Chem
+from scipy.spatial.distance import cosine
 from pycomex.functional.experiment import Experiment
 from pycomex.utils import file_namespace, folder_path
+from visual_graph_datasets.processing.base import ProcessingBase
+from visual_graph_datasets.processing.molecules import MoleculeProcessing
+from visual_graph_datasets.graph import copy_graph_dict
+from graph_attention_student.torch.megan import Megan
+from megan_global_explanations.gpt import query_gpt
+from megan_global_explanations.gpt import describe_molecule
+from megan_global_explanations.prototype.optimize import genetic_optimize
+from megan_global_explanations.prototype.optimize import embedding_distances_fitness_mse
+from megan_global_explanations.prototype.molecules import mutate_remove_atom
+from megan_global_explanations.prototype.molecules import mutate_remove_bond
 
 PATH = pathlib.Path(__file__).parent.absolute()
 
@@ -71,7 +92,7 @@ MIN_SAMPLES: int = 10
 #       This boolean flag determines whether the prototype optimization should be executed at 
 #       all or not. If this is False, the entire optimization routine will be skipped during the 
 #       cluster discovery.
-OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
+OPTIMIZE_CLUSTER_PROTOTYPE: bool = True
 # :param INITIAL_POPULATION_SAMPLE:
 #       This integer number determines the number of initial samples that are drawn from the cluster 
 #       members as the initial population of the prototype optimization GA procedure.
@@ -88,11 +109,21 @@ OPTIMIZE_PROTOTYPE_EPOCHS: int = 50
 #       This string value has to be the OpenAI API key that should be used for the GPT-4 requests
 #       that will be needed to generate the natural language descriptions of the prototypes.
 OPENAI_KEY: str = os.getenv('OPENAI_KEY')
-# :param DESCRIBE_PROTOTYPE:
-#       This boolean flag determines whether the prototype description should be generated at all
-#       or not. If this is False, the entire description routine will be skipped during the
-#       cluster discovery.
 DESCRIBE_PROTOTYPE: bool = False
+# :param HYPOTHESIZE_PROTOTYPE:
+#       This boolean flag determines whether the prototype hypothesis should be generated at all
+#       or not. If this is False, the entire hypothesis routine will be skipped during the
+#       cluster discovery.
+HYPOTHESIZE_PROTOTYPE: bool = False
+# :param CONTRIBUTION_THRESHOLDS:
+#       This dictionary determines the thresholds to be used when converting the contribution values 
+#       of classification tasks into the strings such that they can be passed to the language model 
+#       for the hypothesis generation. The keys are the contribution values and the values are the 
+#       strings that will be used to describe the impact of these contributions in words.
+#       Note that this will only be used for classification problems since for classification problems 
+#       the contribution values are measured in classification logits which do not have a direct meaning 
+#       to the language model. In contrast, regression contributions are measured directly in the 
+#       target space and therefore do not need to be converted.
 
 # == VISUALIZATION PARAMETERS ==
 # These parameters determine the details of the visualizations that will be created as part of the 
@@ -102,7 +133,7 @@ DESCRIBE_PROTOTYPE: bool = False
 #       This boolean flag determines whether the UMAP visualization of the graph embeddings should be
 #       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
 #       artifact of the experiment.
-PLOT_UMAP: bool = True
+PLOT_UMAP: bool = False
 
 
 __DEBUG__ = True
@@ -113,5 +144,160 @@ experiment = Experiment.extend(
     namespace=file_namespace(__file__),
     glob=globals()
 )
+
+@experiment.hook('optimize_prototype', default=False, replace=True)
+def optimize_prototype(e: Experiment,
+                       model: Megan,
+                       channel_index: int,
+                       processing: ProcessingBase,
+                       cluster_graphs: t.List[tv.GraphDict],
+                       cluster_embeddings: np.ndarray,
+                       **kwargs,
+                       ) -> dict:
+    
+    # For the embedding objective function we need some kind of anchor location to which we want to 
+    # minimize the distance. For this we are simply going to use the cluster centroid.
+    anchor = np.mean(cluster_embeddings, axis=0)
+    
+    # In this section we assemble the initial population for the optimization of the prototype. In fact, 
+    # in this use case, it is possible to already assemble a very good initial population by simply using 
+    # the subgraphs which are already highlighted by the explanation masks of the cluster members. These 
+    # should by themselves already be very close to the ideal cluster prototype and most likely only 
+    # need minor refinements through the GA optimization.
+    num_initial = min(e.INITIAL_POPULATION_SAMPLE, len(cluster_embeddings))
+    
+    anchor_distances = np.array([cosine(anchor, emb) for emb in cluster_embeddings])
+    indices = np.argsort(anchor_distances).tolist()[:num_initial]
+    
+    violation_radius = np.percentile(anchor_distances, 90)
+    print('MIN', anchor_distances[indices][:3], 'MEAN', np.mean(anchor_distances), 'MAX', np.max(anchor_distances), 'VIOL', violation_radius)
+    
+    elements_initial = []
+    for index in indices:
+        graph = copy_graph_dict(cluster_graphs[index])
+        smiles = graph['graph_repr'].item()
+
+        mol = Chem.MolFromSmiles(smiles)
+        smiles = Chem.MolToSmiles(mol, kekuleSmiles=True, isomericSmiles=False)
+        
+        # We actually HAVE TO clear those here or else it will fail. This is because the molecular mutation operations 
+        # do not preserve the additional graph attributes and it will cause issues to pass graphs through the model 
+        # where some of them have this attribute and some of them dont.
+        del graph['node_importances']
+        del graph['edge_importances']
+
+        elements_initial.append({
+            'graph': graph,
+            'value': smiles,
+        })
+    
+    # This function will execute the actual genetic optimization algorithm to create graph prototypes
+    # that are as close to the cluster centroid (==anchor) as possible.
+    element, history = genetic_optimize(
+        fitness_func=lambda elements: embedding_distances_fitness_mse(
+            elements=elements,
+            model=model,
+            channel_index=channel_index,
+            anchors=[anchor],
+            violation_radius=0.2,
+        ),
+        # fitness_func=lambda graphs: graph_matching_embedding_fitness(
+        #     graphs=graphs,
+        #     model=model,
+        #     channel_index=channel_index,
+        #     anchor_graphs=anchor_graphs,
+        #     processing=processing, 
+        #     check_edges=True,
+        # ),
+        sample_func=lambda: deepcopy(random.choice(elements_initial)),
+        mutation_funcs=[
+            lambda element: mutate_remove_bond(element, processing=processing),
+            lambda element: mutate_remove_atom(element, processing=processing),
+            lambda element: mutate_remove_atom(mutate_remove_bond(element, processing=processing), processing=processing),
+            lambda element: mutate_remove_atom(mutate_remove_atom(element, processing=processing), processing=processing),
+        ],
+        num_epochs=10,
+        population_size=2000,
+        logger=e.logger,
+        elite_ratio=0.01,
+        refresh_ratio=0.1,
+    )
+    
+    return element
+
+
+@experiment.hook('describe_prototype', default=False, replace=True)
+def describe_prototype(e: Experiment,
+                       value: str,
+                       image_path: str,
+                       ) -> str:
+    
+    print(value)
+    e.log(' * generating description for the molecular prototype...')
+    description, _ = describe_molecule(
+        api_key=e.OPENAI_KEY,
+        smiles=value,
+        image_path=image_path,
+        max_tokens=200,
+    )
+    print(description)
+    
+    return description
+
+
+@experiment.hook('prototype_hypothesis', default=False, replace=True)
+def prototype_hypothesis(e: Experiment,
+                         value: str,
+                         image_path: str,
+                         channel_index: int,
+                         contribution: float,
+                         **kwargs,
+                         ) -> t.Optional[str]:
+    
+    e.log(' * generating mutagenicity prototype hypothesis with GPT...')
+    
+    system_message = (
+        f'You are a chemistry expert that is tasked to come up with possible hypotheses about the underlying '
+        f'structure-property relationships of molecular properties.\n\n'
+        f'The property in question is "Water Solubility" - meaning a molecules tendency to dissolve in water. \n\n'
+        'You will be presented with a molecular substructure / fragment in SMILES representation and with some '
+        'empirical evidence linked to that substructure. For your answer follow a structure that starts with an '
+        'explanation of the hypothesized reason for the identified structure-property relationship, followed summary '
+        'of the presented evidence and the hypothesis like this: \n\n'
+        'Detailed Explanation: [Elaboration of the causal reasoning for  the suggested structure property relationship\n\n'
+        'Hypothesis: [One sentence describing the structure and linked property. Two sentences about the hypothesized causal explanations.]\n\n'
+        '- you do not use markdown syntax\n'
+        '- you do not use enumerations\n'
+        '- you language is accurate and concise\n'
+    )
+    
+    if e.DATASET_TYPE == 'regression':
+        impact: str = f'{contribution:.2f}'
+        name = 'Water Solubility'
+        
+    elif e.DATASET_TYPE == 'classification':
+        name: str = e.CHANNEL_INFOS[channel_index]["name"]
+        impact: str = ''
+        for threshold, description in e.CONTRIBUTION_THRESHOLDS.items():
+            if contribution > threshold:
+                impact = description.upper()
+    
+    user_message = (
+        f'The structure given by the SMILES representation "{value}" has been linked to {impact} influence '
+        f'towards "{name}"'
+    )
+    
+    try:
+        description, messages = query_gpt(
+            api_key=e.OPENAI_KEY,
+            system_message=system_message,
+            user_message=user_message,
+        )
+        print(description)
+        return description
+    except Exception as exc:
+        print(exc)
+        traceback.print_exc()
+        return None
 
 experiment.run_if_main()

@@ -1,8 +1,14 @@
 """
-This experiment can be used to generate a concept extraction report for a visual graph dataset 
-and an already trained MEGAN model. 
+This is the base experiment for the generation of a concept clustering from a visual graph dataset and an
+already pre-trained Megan model. After the model and the dataset have been loaded, the HDBSCAN algorithm will 
+be used to find the concept clusters in the model's latent space for each of the explanation channels.
 
+Additionally, there is the option to optimize prototype graphs for each of the clusters and to generate
+natural language descriptions and hypotheses for the prototypes using GPT-4 API.
 
+All information created for each of the clusters is then saved into a persistent format on the disk and 
+additionally a concept cluster report PDF is generated which can be used by human users to understand 
+the concept explanations.
 """
 import os
 import json
@@ -10,6 +16,7 @@ import random
 import pathlib
 import traceback
 import typing as t
+from copy import deepcopy
 from collections import defaultdict
 
 import umap
@@ -459,6 +466,7 @@ def experiment(e: Experiment):
             cluster_centroid = np.mean(cluster_graph_embeddings, axis=0)
             # cluster_indices: (B_cluster, )
             cluster_indices = channel_indices[mask]
+            cluster_elements = deepcopy([index_data_map[i] for i in cluster_indices])
             cluster_index_tuples = [(i, channel_index) for i in cluster_indices]
             cluster_graphs = [index_data_map[i]['metadata']['graph'] for i in cluster_indices]
             cluster_image_paths = [index_data_map[i]['image_path'] for i in cluster_indices]
@@ -474,6 +482,7 @@ def experiment(e: Experiment):
                 'embeddings':           cluster_graph_embeddings,
                 'centroid':             cluster_centroid,
                 'index_tuples':         cluster_index_tuples,
+                'elements':             cluster_elements,
                 'graphs':               cluster_graphs,
                 'image_paths':          cluster_image_paths,
                 'name':                 e.CHANNEL_INFOS[channel_index]['name'],
@@ -487,6 +496,13 @@ def experiment(e: Experiment):
 
                 try:
                     e.log(f' ({cluster}/{num_clusters}) optimizing prototype...')
+                    # :hook optimize_prototype:
+                    #       Given the model, the channel index, the processing instance, the list of cluster graphs and
+                    #       the list of cluster embeddings, this hook is supposed to return a dictionary that describes 
+                    #       the optimized prototype for the cluster. This dictionary will have to contain the two keys 
+                    #       "graph" (the graph dict representation) and "value" (the string domain representation) of the 
+                    #       the prototype.
+                    
                     # There are rare cases where this also fails due to the initial elements being empty for example
                     # in that case we 
                     cluster_prototype: dict = e.apply_hook(
@@ -497,6 +513,16 @@ def experiment(e: Experiment):
                         cluster_graphs=cluster_graphs,
                         cluster_embeddings=cluster_graph_embeddings,
                     )
+                    
+                    prototype_graph = cluster_prototype['graph']
+                    prototype_value = cluster_prototype['value']
+                    
+                    # Additionally the graph representation will have to contain the keys "node_importances" and
+                    # "edge_importances" which are the explanation masks for the prototype and can be obtained 
+                    # by querying the model with the final prototype graph and updating its attributes.
+                    prototype_info = model.forward_graphs([prototype_graph])[0]
+                    prototype_graph['node_importances'] = prototype_info['node_importance']
+                    prototype_graph['edge_importances'] = prototype_info['edge_importance']
                     
                     # 29.01.24
                     # So actually there is a chance that this visualization step may fail for some very exotic SMILES.
@@ -510,8 +536,18 @@ def experiment(e: Experiment):
                     fig.savefig(prototype_path)
                     plt.close(fig)
                     
+                    # The prototype that we add to the list needs to be a visual graph element dictionary which means that 
+                    # it has to have the following structure consisting of an image path and the metadata dict, which then in 
+                    # turn contains the actual graph representation dict.
+                    
+                    prototype_graph['graph_repr'] = prototype_value
+                    
                     prototype = {
                         'image_path': prototype_path,
+                        'metadata': {
+                            'graph':    prototype_graph, 
+                            'repr':     prototype_value,
+                        },
                     }
                     info['prototypes'] = [prototype]
                     
@@ -599,6 +635,9 @@ def experiment(e: Experiment):
     for channel_index in range(e['num_channels']):
             
         infos = [info for info in cluster_infos if info['channel_index'] == channel_index]
+        # Clustering metrics cannot be calculated if there are not at least 2 clusters!
+        if len(infos) < 2:
+            continue
         
         embeddings = []
         labels = []
@@ -721,6 +760,22 @@ def experiment(e: Experiment):
         fig_path = os.path.join(e.path, 'umap.png')
         fig.savefig(fig_path, dpi=300)
     
+    # ~ writing concepts to disk
+    # The ConceptWriter class can be used to write all the concept related information to the disk as a special 
+    # self-contained data structure. 
+    
+    e.log('saving the concept clustering data...')
+    concepts_path = os.path.join(e.path, 'concepts')
+    os.mkdir(concepts_path)
+    
+    writer = ConceptWriter(
+        path=concepts_path,
+        model=model,
+        processing=processing,
+        logger=e.logger,
+    )
+    writer.write(cluster_infos)
+    
     # ~ creating the concept report
     # Based on the raw information about the extracted concept clusters we now want to generate a PDF report 
     # file which presents that information to a user in a more structured way.
@@ -744,20 +799,7 @@ def experiment(e: Experiment):
         normalize_centroid=True,
     )
     
-    # ~ writing concepts to disk
-    # The ConceptWriter class can be used to write all the concept related information to the disk as a special 
-    # self-contained data structure. 
     
-    e.log('saving the concept clustering data...')
-    concepts_path = os.path.join(e.path, 'concepts')
-    os.mkdir(concepts_path)
-    
-    writer = ConceptWriter(
-        path=concepts_path,
-        processing=processing,
-        logger=e.logger,
-    )
-    # writer.write(cluster_infos)
     
     
 @experiment.analysis

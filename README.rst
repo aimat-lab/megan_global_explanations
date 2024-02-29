@@ -14,13 +14,28 @@ Global Concept-Explanations for the Self-Explaining MEGAN Graph Neural Network
 =============
 
 This package implements the functionality needed to extract global concept-based explanations from the recently published 
-MEGAN_ graph neural network model.
+MEGAN (`GitHub <https://github.com/aimat-lab/graph_attention_student>`, `paper <https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18>`) 
+graph neural network model. The MEGAN model itself is a self-explaining graph neural network, which is able to
+provide local attributional explanations its own predictions through an attention mechanism. By extending it's architecture and 
+training process, it is possible to additionally extract concept explanations from it's latent space of explanation embeddings.
 
 ❓ What are Global Concept Explanations?
 ========================================
 
-to be done
+*Local* explanations aim to provide additional information about individual model predictions. Although there are different forms 
+of local explanations the, the most common modality is that of importance attribution masks. For graph neural networks, these masks 
+are defined on the node and edge level and usually provide a 0 to 1 *importance value* of how much a certain node or edge contributed
+to the final prediction. While these explanations are very useful for understanding the model's decision making process on a case by 
+case basis, it is hard to understand the model's general behavior.
 
+*Global* explanations on the other hand aim to provide a more general understanding of the model's overal decision making process. As 
+with local explanations, there exist different formats in which global model information can be presented, including generative explanations,
+prototype-based explanations and concept-based explanations among others.
+
+*Concept-based* explanations are one specific form of global explanations, which try to explain a models general behavior which is aggregated 
+over many individual instances. The basic idea is to identify certain generalizable *concepts* which are then connected to a certain impact 
+toward the model's prediction outcome. One such concept is generally defined as a common underlying pattern that is shared among multiple instances 
+of the dataset. From a technical perspective, a concept can be defined as a set of input fragments. 
 
 Installation
 ============
@@ -94,3 +109,4 @@ Credits
   with these experiments.
 
 .. _PyComex: https://github.com/the16thpythonist/pycomex.git
+.. _MEGAN: https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18 
