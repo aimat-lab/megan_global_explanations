@@ -114,7 +114,7 @@ DESCRIBE_PROTOTYPE: bool = False
 #       This boolean flag determines whether the prototype hypothesis should be generated at all
 #       or not. If this is False, the entire hypothesis routine will be skipped during the
 #       cluster discovery.
-HYPOTHESIZE_PROTOTYPE: bool = False
+HYPOTHESIZE_PROTOTYPE: bool = True
 # :param CONTRIBUTION_THRESHOLDS:
 #       This dictionary determines the thresholds to be used when converting the contribution values 
 #       of classification tasks into the strings such that they can be passed to the language model 
@@ -133,7 +133,7 @@ HYPOTHESIZE_PROTOTYPE: bool = False
 #       This boolean flag determines whether the UMAP visualization of the graph embeddings should be
 #       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
 #       artifact of the experiment.
-PLOT_UMAP: bool = False
+PLOT_UMAP: bool = True
 
 
 __DEBUG__ = True

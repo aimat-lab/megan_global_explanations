@@ -17,7 +17,38 @@ This package implements the functionality needed to extract global concept-based
 MEGAN (`GitHub <https://github.com/aimat-lab/graph_attention_student>`, `paper <https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18>`) 
 graph neural network model. The MEGAN model itself is a self-explaining graph neural network, which is able to
 provide local attributional explanations its own predictions through an attention mechanism. By extending it's architecture and 
-training process, it is possible to additionally extract concept explanations from it's latent space of explanation embeddings.
+training process, it is possible to additionally extract concept-based explanations from it's latent space of explanation embeddings.
+These concept explanations provide a *global* understanding of the model's decision making process.
+
+**Abstract** Besides improving trust and validating model fairness, xAI
+practices also have the potential to recover valuable scientific insights in
+application domains where little to no prior human intuition exists. To
+that end, we propose a method to create global concept explanations for
+graph prediction tasks with the ultimate objective of gaining a deeper
+understanding of graph predictive tasks, such as chemical property 
+predictions. To achieve this we introduce the updated Megan2 version
+of the recently introduced multi-explanation graph attention network.
+Concept explanations are extracted by identifying dense clusters in the
+model’s latent space of explanations. Finally, we optimize sub-graph 
+prototypes to represent each concept cluster and optionally query a language
+model to propose potential hypotheses for the underlying causal 
+reasoning behind the identified structure-property relationships. We conduct
+computational experiments on synthetic and real-world graph property
+prediction tasks. For the synthetic tasks we find that our method correctly 
+reproduces the structural rules by which they were created. For
+real-world molecular property regression and classification tasks, we find
+that our method rediscovers established rules of thumb as well as 
+previously published hypotheses from chemistry literature. Additionally, the
+concepts extracted by our method indicate more fine-grained resolution
+of structural details than existing explainability methods. Overall, we
+believe our positive results are a promising step toward the automated
+extraction of scientific knowledge through AI models, suitable for more
+complex downstream prediction tasks in the future
+
+🔔 News
+=======
+
+- **March 2024** Paper is submitted to the `2nd xAI world conference <https://xaiworldconference.com/2024/>`
 
 ❓ What are Global Concept Explanations?
 ========================================
@@ -35,10 +66,13 @@ prototype-based explanations and concept-based explanations among others.
 *Concept-based* explanations are one specific form of global explanations, which try to explain a models general behavior which is aggregated 
 over many individual instances. The basic idea is to identify certain generalizable *concepts* which are then connected to a certain impact 
 toward the model's prediction outcome. One such concept is generally defined as a common underlying pattern that is shared among multiple instances 
-of the dataset. From a technical perspective, a concept can be defined as a set of input fragments. 
+of the dataset. From a technical perspective, a concept can be defined as a set of input fragments. What exactly these input fragments are differs 
+between application domains. In image processing, for example, these fragments are super pixels or image segments and in langauge processing they 
+can be words or phrases. In the graph processing domain, these input fragments are subgraph motifs which can be contained in multiple different 
+graphs of the dataset.
 
-Installation
-============
+📦 Installation by Source
+=========================
 
 .. code-block:: shell
 
@@ -49,7 +83,7 @@ Then in the main folder run a ``pip install``:
 .. code-block:: shell
 
     cd megan_global_explanations
-    python3 -m pip install .
+    python3 -m pip install -e .
 
 Afterwards, you can check the install by invoking the CLI:
 
@@ -59,47 +93,37 @@ Afterwards, you can check the install by invoking the CLI:
     python3 -m megan_global_explanations.cli --help
 
 
-Usage
-=====
+📌 Dependencies
+===============
 
-Computational Experiments
--------------------------
+This package heavily builds on the following two packages:
 
-It is possible to list, show and execute all the computational experiments using a command line interface
-(CLI).
+- `visual_graph_datasets <https://github.com/aimat-lab/visual_graph_datasets/>`: This builds the epic story
+- `graph_attention_student <https://github.com/aimat-lab/graph_attention_student/>`: 
 
-All the available experiments can be listed like this:
+🚀 Quickstart
+=============
 
-.. code-block:: shell
 
-    python3 -m megan_global_explanations.cli list
 
-The details for a specific experiment can be viewed like this:
+🧪 Computational Experiments
+============================
 
-.. code-block:: shell
 
-    python3 -m megan_global_explanations.cli info [experiment_name]
 
-A new run of an experiment can be started like this.
+📖 Referencing
+==============
 
-.. code-block::
+If you use, extend or otherwise mention or work, please cite the paper as follows:
 
-    python3 -m megan_global_explanations.cli run [experiment_name]
+.. code-block:: bibtex
 
-Be aware that the execution of any experiment will most likely take a lot of time.
-
-Each experiment will create a new archive folder, which will contain all the artifacts (such as visual
-examples and the raw data) created during the runtime. The location of this archive folder can be found
-from the output generated by the experiment execution.
-
-Archived Experiments
---------------------
-
-To view the detailed data which was used in the making of the paper, go to
-``megan_global_explanations/experiments``. The subfolders in that folder contain the archived experiments.
-These contain extensive examples for each repetition of the various experiments as well as all of the raw
-data collected during the execution of the experiments.
-
+    @article{teufel2024meganGlobal
+        title={Global Concept-Explanations for the Self-Explaining MEGAN Graph Neural Network},
+        author={Teufel, Jonas and Friederich, Pascal},
+        journal={arxiv},
+        year={2024}
+    }
 
 Credits
 =======
