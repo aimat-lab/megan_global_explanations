@@ -25,8 +25,11 @@ from megan_global_explanations.prototype.optimize import genetic_optimize
 from megan_global_explanations.prototype.optimize import embedding_distances_fitness_mse
 from megan_global_explanations.prototype.molecules import mutate_remove_atom
 from megan_global_explanations.prototype.molecules import mutate_remove_bond
+from megan_global_explanations.utils import EXPERIMENTS_PATH
+
 
 PATH = pathlib.Path(__file__).parent.absolute()
+ASSETS_PATH = os.path.join(EXPERIMENTS_PATH, 'assets')
 
 # == DATASET PARAMETERS ==
 # The parameters determine the details related to the dataset that should be used as the basis 
@@ -65,7 +68,7 @@ CHANNEL_INFOS: t.Dict[int, dict] = {
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the 
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'aqsoldb.ckpt')
+MODEL_PATH: str = os.path.join(ASSETS_PATH, 'models', 'aqsoldb.ckpt')
 
 
 # == CLUSTERING PARAMETERS ==

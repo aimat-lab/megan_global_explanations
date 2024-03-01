@@ -57,11 +57,12 @@ from megan_global_explanations.prototype.colors import mutate_remove_node
 from megan_global_explanations.gpt import describe_color_graph
 from megan_global_explanations.data import ConceptWriter
 from megan_global_explanations.data import ConceptReader
+from megan_global_explanations.utils import EXPERIMENTS_PATH
 
 mpl.use('Agg')
 
-
 PATH = pathlib.Path(__file__).parent.absolute()
+ASSETS_PATH = os.path.join(EXPERIMENTS_PATH, 'assets')
 
 # == DATASET PARAMETERS ==
 # The parameters determine the details related to the dataset that should be used as the basis 
@@ -95,7 +96,7 @@ SUBSET: t.Optional[int] = None
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the 
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'rb_dual_motifs.ckpt')
+MODEL_PATH: str = os.path.join(ASSETS_PATH, 'models', 'rb_dual_motifs.ckpt')
 
 # == CLUSTERING PARAMETERS ==
 # This section determines the parameters of the concept clustering algorithm itself.
@@ -191,6 +192,30 @@ experiment = Experiment(
     namespace=file_namespace(__file__),
     glob=globals(),
 )
+
+@experiment.hook('get_dataset_path')
+def get_dataset_path(e: Experiment) -> str:
+    """
+    This hook is responsible for returning the path to the visual graph dataset that is to be used
+    for the concept clustering. This may either be an absolute string path to a visual graph dataset
+    folder on the local system. Otherwise this may also be a valid string identifier for a vgd in
+    which case it will be downloaded from the remote file share instead.
+    """
+    if os.path.exists(e.VISUAL_GRAPH_DATASET):
+        dataset_path = e.VISUAL_GRAPH_DATASET
+        
+    else:
+        config = Config()
+        config.load()
+        
+        dataset_path = ensure_dataset(
+            dataset_name=e.VISUAL_GRAPH_DATASET,
+            config=config,
+            logger=e.logger,
+        )
+        
+    return dataset_path
+
 
 @experiment.hook('load_dataset', replace=False)
 def load_dataset(e: Experiment,
@@ -313,20 +338,16 @@ def experiment(e: Experiment):
     # The dataset is either loaded from the local file system as a path or it is downloaded 
     # from the remote file share first by providing it's unique string identifier.
     
-    if os.path.exists(e.VISUAL_GRAPH_DATASET):
-        dataset_path = e.VISUAL_GRAPH_DATASET
-        
-    else:
-        config = Config()
-        config.load()
-        
-        dataset_path = ensure_dataset(
-            dataset_name=e.VISUAL_GRAPH_DATASET,
-            config=config,
-            logger=e.logger,
-        )
+    # :hook get_dataset_path:
+    #       This hook will return the absolute string path to the visual graph dataset.
+    dataset_path = e.apply_hook('get_dataset_path')
     
     e.log('loading dataset...')
+    # :hook load_dataset:
+    #       This hook is responsible for loading the dataset from the given path and returning it as a
+    #       index_data_map. Additionally, this function has to set up the experiment values "node_dim",
+    #       "edge_dim" and "out_dim" based on the dataset that has been loaded.
+    #       It also returns the processing object that was stored alongside the dataset.
     index_data_map, processing = e.apply_hook(
         'load_dataset',
         path=dataset_path,
@@ -807,28 +828,57 @@ def analysis(e: Experiment):
     
     e.log('starting analysis...')
     
-    e.log('loading the graph data...')
-    graphs_path = os.path.join(e.path, 'graphs.json')
-    with open(graphs_path, 'r') as file:
-        graphs = json.load(file)
-        
-    # The graph representation's values are supposed to be numpy arrays. After loading it from the disk
-    # the values will only be nested lists though, so therefore we need to convert them into numpy arrays
-    for graph in graphs:
-        for key, value in graph.items():
-            if isinstance(value, list):
-                graph[key] = np.array(value)
+    # ~ loading everything
+    # Before we can do any analysis we need to load all the actual data that was created or used during the experiment
+    # we mainly want to load the persistent representation of the the extracted concepts. However, this requires that 
+    # we also load the dataset and the model first!
     
-    e.log(f'loaded {len(graphs)} graphs from disk')
+    e.log('loading the dataset...')
+    dataset_path = e.apply_hook('get_dataset_path')
+    index_data_map, processing = e.apply_hook(
+        'load_dataset',
+        path=dataset_path,
+    )
+    e.log(f'loaded dataset with {len(index_data_map)} elements...')
     
-    return
-    e.log('loading the concept data...')
-    concept_path = os.path.join(e.path, 'concepts')
+    e.log('loading model...')
+    model = e.apply_hook(
+        'load_model',
+        path=e.MODEL_PATH,
+    ) 
+    e.log(f'loaded model of type {model.__class__.__name__}')
+
+    e.log('loading concepts...')
+    concepts_path = os.path.join(e.path, 'concepts')
     reader = ConceptReader(
-        path=concept_path,
+        path=concepts_path,
+        model=model,
+        dataset=index_data_map,
         logger=e.logger,
     )
-    concept_infos: list[dict] = reader.read()
-    e.log(f'loaded information about {len(concept_infos)} concepts')    
+    concepts = reader.read()
+    e.log(f'loaded {len(concepts)} concepts...')
+    
+    for concept in concepts:
+        concept['image_paths'] = [element['image_path'] for element in concept['elements']]
+        concept['graphs'] = [element['metadata']['graph'] for element in concept['elements']]
+    
+    # ~ creating the concept report
+    # After everything is loaded we can then create the concept report PDF itself from the loaded 
+    # concepts
+    
+    report_path = os.path.join(e.path, 'concept_report.pdf')
+    cache_path = os.path.join(e.path, 'cache')
+    create_concept_cluster_report(
+        cluster_data_list=concepts,
+        dataset_type=e.DATASET_TYPE,
+        logger=e.logger,
+        path=report_path,
+        cache_path=cache_path,
+        examples_type='centroid',
+        num_examples=16,
+        distance_func=cosine,
+        normalize_centroid=True,
+    )
 
 experiment.run_if_main()

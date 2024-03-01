@@ -9,6 +9,11 @@
 .. |version| image:: https://img.shields.io/badge/version-0.1.0-orange.svg
    :target: https://www.python.org/
 
+.. image:: overview.png
+    :width: 800
+    :alt: Overview
+    :align: center
+
 =============
 Global Concept-Explanations for the Self-Explaining MEGAN Graph Neural Network
 =============
@@ -45,11 +50,13 @@ believe our positive results are a promising step toward the automated
 extraction of scientific knowledge through AI models, suitable for more
 complex downstream prediction tasks in the future
 
+=======
 🔔 News
 =======
 
 - **March 2024** Paper is submitted to the `2nd xAI world conference <https://xaiworldconference.com/2024/>`
 
+========================================
 ❓ What are Global Concept Explanations?
 ========================================
 
@@ -71,6 +78,7 @@ between application domains. In image processing, for example, these fragments a
 can be words or phrases. In the graph processing domain, these input fragments are subgraph motifs which can be contained in multiple different 
 graphs of the dataset.
 
+=========================
 📦 Installation by Source
 =========================
 
@@ -92,7 +100,7 @@ Afterwards, you can check the install by invoking the CLI:
     python3 -m megan_global_explanations.cli --version
     python3 -m megan_global_explanations.cli --help
 
-
+============
 📌 Dependencies
 ===============
 
@@ -101,16 +109,26 @@ This package heavily builds on the following two packages:
 - `visual_graph_datasets <https://github.com/aimat-lab/visual_graph_datasets/>`: This builds the epic story
 - `graph_attention_student <https://github.com/aimat-lab/graph_attention_student/>`: 
 
+=============
 🚀 Quickstart
 =============
 
 
 
+
+============================
 🧪 Computational Experiments
 ============================
 
+This package uses the `PyComex`_ framework to manage computational experiments. This means that all computational experiments
+are defined as independent python modules in the ``experiments`` folder.
 
+The following list provides an overview of the most important experiments:
 
+- ``vgd_concept_extraction.py``: The base implementation for the concept clustering process based on a visual graph dataset 
+  and a pre-trained ``Megan`` model.
+
+==============
 📖 Referencing
 ==============
 

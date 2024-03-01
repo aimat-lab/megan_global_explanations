@@ -379,17 +379,11 @@ class ConceptReader():
         self.logger.info(f'   querying the model with concept elements...')
         elements = concept['elements']
         indices = [element['metadata']['index'] for element in elements]
-        graphs = [self.index_data_map[index]['metadata']['graph'] for index in indices]
-        infos = self.model.forward_graphs(graphs)
+        graphs = deepcopy([self.index_data_map[index]['metadata']['graph'] for index in indices])
         
         self.logger.info(f'   updating graph information...')
-        for index, element, graph, info in zip(indices, elements, graphs, infos):
-            graph = deepcopy(graph)
-            graph['graph_prediction'] = info['graph_output']
-            graph['graph_embedding'] = info['graph_embedding']
-            graph['node_importances'] = info['node_importance']
-            graph['edge_importances'] = info['edge_importance']
-            
+        self.update_graphs(graphs)
+        for index, element, graph in zip(indices, elements, graphs):
             element.update(deepcopy(self.index_data_map[index]))
             element['metadata']['graph'] = graph
             
@@ -402,7 +396,25 @@ class ConceptReader():
             reader = self.reader_cls(prototypes_path)
             index_data_map = reader.read()
             
-            concept['prototypes'] = [data for data in index_data_map.values()]
+            prototypes = [data for data in index_data_map.values()]
+            prototype_graphs = [data['metadata']['graph'] for data in prototypes]
+            self.update_graphs(prototype_graphs)
+            
+            concept['prototypes'] = prototypes
+            
             
         return concept
         
+    def update_graphs(self, graphs: t.List[dict]) -> t.List[dict]:
+        
+        infos = self.model.forward_graphs(graphs)
+        devs = self.model.leave_one_out_deviations(graphs)
+        
+        for graph, info, dev in zip(graphs, infos, devs):
+            graph['node_importances'] = info['node_importance']
+            graph['edge_importances'] = info['edge_importance']
+            graph['graph_prediction'] = info['graph_output']
+            graph['graph_embedding'] = info['graph_embedding']
+            graph['graph_deviation'] = dev
+            
+        return graphs

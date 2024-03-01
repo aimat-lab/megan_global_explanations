@@ -18,7 +18,8 @@ ASSETS_PATH = os.path.join(PATH, 'assets')
 # :param QUERY_ELEMENT:
 #       The string domain representation of the element with which to query the model. 
 #       For this element the explanations will be created.
-QUERY_ELEMENT: str = 'C1(Cl)=C(Cl)C(Cl)=CC=C1CCCN'
+#QUERY_ELEMENT: str = 'C1(Cl)=C(Cl)C(Cl)=CC=C1CCCN'
+QUERY_ELEMENT: str = 'C1=CC(=C(C(=C1CCN)Cl)Cl)Cl'
 # :param QUERY_TYPE:
 #       This string determines whether the given prediction task is a regression or a classification
 #       problem, which in turn determines the details of the experiment such as how certain values 
@@ -37,7 +38,7 @@ VISUAL_GRAPH_DATASET: str = 'aqsoldb'
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(ASSETS_PATH, 'models', 'aqsoldb2.ckpt')
+MODEL_PATH: str = os.path.join(ASSETS_PATH, 'models', 'aqsoldb.ckpt')
 # :param CONCEPTS_PATH:
 #       This has to be the absolute string path to the concept clustering data that is to be used for the
 #       concept clustering. This data is typically created by the concept clustering process and then

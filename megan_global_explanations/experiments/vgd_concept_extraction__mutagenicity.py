@@ -97,7 +97,7 @@ MIN_SAMPLES: int = 5
 #       This boolean flag determines whether the prototype optimization should be executed at 
 #       all or not. If this is False, the entire optimization routine will be skipped during the 
 #       cluster discovery.
-OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
+OPTIMIZE_CLUSTER_PROTOTYPE: bool = True
 # :param INITIAL_POPULATION_SAMPLE:
 #       This integer number determines the number of initial samples that are drawn from the cluster 
 #       members as the initial population of the prototype optimization GA procedure.
@@ -115,7 +115,7 @@ DESCRIBE_PROTOTYPE: bool = False
 #       This boolean flag determines whether the prototype hypothesis should be generated at all
 #       or not. If this is False, the entire hypothesis routine will be skipped during the
 #       cluster discovery.
-HYPOTHESIZE_PROTOTYPE: bool = False
+HYPOTHESIZE_PROTOTYPE: bool = True
 # :param CONTRIBUTION_THRESHOLDS:
 #       This dictionary determines the thresholds to be used when converting the contribution values 
 #       of classification tasks into the strings such that they can be passed to the language model 
@@ -283,7 +283,6 @@ def optimize_prototype(e: Experiment,
             lambda element: mutate_remove_atom(element, processing=processing),
             lambda element: mutate_remove_atom(mutate_remove_bond(element, processing=processing), processing=processing),
             lambda element: mutate_remove_atom(mutate_remove_atom(element, processing=processing), processing=processing),
-            #lambda element: mutate_modify_atom(element, processing=processing),
         ],
         num_epochs=10,
         population_size=2000,

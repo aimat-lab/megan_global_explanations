@@ -213,7 +213,24 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             # Another distribution that we want to look at is the distribution of the actual predicted values for all 
             # the cluster members. This will in general be less informative than the fidelity values but potentially 
             # still interesting for the contrast.
-            predictions = [graph['graph_prediction'] for graph in graphs]
+            
+            # 01.03.24 - This was changed from just taking the prediction from the graph dict as it is. That would assume 
+            # that the actual tensor that is output by the model was already properly processed according to the prediction 
+            # type, which we should not assume and instead we should do that processing here: If the type is regression we 
+            # just take the single value in the array and if classification we determine the class by argmax.
+            predictions: t.List[float] = []
+            for graph in graphs:
+                pred = graph['graph_prediction']
+                if isinstance(pred, np.ndarray):
+                    if dataset_type == 'regression':
+                        pred = pred[0]
+                    else:
+                        pred = np.argmax(pred)
+                # backwards compatibility: If the prediction happens to be just a value then we assume this is already 
+                # processed and we can just take it as it is.
+                else:
+                    predictions.append(pred)
+            
             predictions_mean = np.mean(predictions)
             predictions_std = np.std(predictions)
             fig, ax = plt.subplots(nrows=1, ncols=1, figsize=fig_size)

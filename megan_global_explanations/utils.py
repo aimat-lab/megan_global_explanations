@@ -29,7 +29,10 @@ TEMPLATE_ENV = j2.Environment(
 )
 TEMPLATE_ENV.globals.update(**{
     'zip': zip,
-    'enumerate': enumerate
+    'enumerate': enumerate,
+})
+TEMPLATE_ENV.filters.update(**{
+    'nl2br': lambda value: value.replace('\n', '<br>'),
 })
 
 # This logger can be conveniently used as the default argument for any function which optionally accepts
