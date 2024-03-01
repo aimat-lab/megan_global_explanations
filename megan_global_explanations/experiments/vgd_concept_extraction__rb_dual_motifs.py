@@ -59,7 +59,7 @@ SUBSET: t.Optional[int] = None
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the 
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'rb_dual_motifs_2.ckpt')
+MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'rb_dual_motifs.ckpt')
 
 # == CLUSTERING PARAMETERS ==
 # This section determines the parameters of the concept clustering algorithm itself.
