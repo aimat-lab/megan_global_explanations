@@ -1,22 +1,22 @@
 |made-with-python| |python-version| |version|
 
 .. |made-with-python| image:: https://img.shields.io/badge/Made%20with-Python-1f425f.svg
-   :target: https://www.python.org/
+    :target: https://www.python.org/
 
 .. |python-version| image:: https://img.shields.io/badge/Python-3.8.0-green.svg
-   :target: https://www.python.org/
+    :target: https://www.python.org/
 
 .. |version| image:: https://img.shields.io/badge/version-0.1.0-orange.svg
-   :target: https://www.python.org/
+    :target: https://www.python.org/
 
 .. image:: overview.png
     :width: 800
     :alt: Overview
     :align: center
 
-=============
+==============================================================================
 Global Concept-Explanations for the Self-Explaining MEGAN Graph Neural Network
-=============
+==============================================================================
 
 This package implements the functionality needed to extract global concept-based explanations from the recently published 
 MEGAN (`GitHub <https://github.com/aimat-lab/graph_attention_student>`, `paper <https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18>`) 
@@ -100,7 +100,7 @@ Afterwards, you can check the install by invoking the CLI:
     python3 -m megan_global_explanations.cli --version
     python3 -m megan_global_explanations.cli --help
 
-============
+===============
 📌 Dependencies
 ===============
 
@@ -143,6 +143,7 @@ If you use, extend or otherwise mention or work, please cite the paper as follow
         year={2024}
     }
 
+=======
 Credits
 =======
 
