@@ -24,10 +24,8 @@ from megan_global_explanations.prototype.optimize import embedding_distance_fitn
 from megan_global_explanations.prototype.optimize import embedding_distances_fitness_mse
 from megan_global_explanations.prototype.optimize import graph_matching_fitness
 from megan_global_explanations.prototype.optimize import graph_matching_embedding_fitness
-from megan_global_explanations.prototype.molecules import sample_from_smiles
-from megan_global_explanations.prototype.molecules import mutate_remove_bond
-from megan_global_explanations.prototype.molecules import mutate_remove_atom
-from megan_global_explanations.prototype.molecules import mutate_modify_atom
+from megan_global_explanations.prototype.colors import mutate_remove_node
+from megan_global_explanations.prototype.colors import mutate_remove_edge
 from megan_global_explanations.gpt import query_gpt
 from megan_global_explanations.gpt import describe_molecule
 
@@ -79,7 +77,7 @@ MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'ba2motifs.ckpt')
 # :param FIDELITY_THRESHOLD:
 #       This float value determines the treshold for the channel fidelity. Only elements with a 
 #       fidelity higher than this will be used as possible candidates for the clustering.
-FIDELITY_THRESHOLD: float = 3.0
+FIDELITY_THRESHOLD: float = 5.0
 # :param MIN_CLUSTER_SIZE:
 #       This parameter determines the min cluster size for the HDBSCAN algorithm. Essentially 
 #       a cluster will only be recognized as a cluster if it contains at least that many elements.
@@ -88,7 +86,7 @@ MIN_CLUSTER_SIZE: int = 10
 #       This cluster defines the HDBSCAN behavior. Essentially it determines how conservative the 
 #       clustering is. Roughly speaking, a larger value here will lead to less clusters while 
 #       lower values tend to result in more clusters.
-MIN_SAMPLES: int = 10
+MIN_SAMPLES: int = 30
 
 # == PROTOTYPE OPTIMIZATION PARAMETERS ==
 # These parameters configure the process of optimizing the cluster prototype representatation
@@ -97,11 +95,19 @@ MIN_SAMPLES: int = 10
 #       This boolean flag determines whether the prototype optimization should be executed at 
 #       all or not. If this is False, the entire optimization routine will be skipped during the 
 #       cluster discovery.
-OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
+OPTIMIZE_CLUSTER_PROTOTYPE: bool = True
 # :param INITIAL_POPULATION_SAMPLE:
 #       This integer number determines the number of initial samples that are drawn from the cluster 
 #       members as the initial population of the prototype optimization GA procedure.
-INITIAL_POPULATION_SAMPLE: int = 16
+INITIAL_POPULATION_SAMPLE: int = 100
+# :param OPTIMIZE_PROTOTYPE_POPSIZE:
+#       This integer number determines the population size of the genetic optimization algorithm
+#       that is used to optimize the prototype representation.
+OPTIMIZE_PROTOTYPE_POPSIZE: int = 1000
+# :param OPTIMIZE_PROTOTYPE_EPOCHS:
+#       This integer number determines the number of epochs that the genetic optimization algorithm
+#       will be executed for the prototype optimization.
+OPTIMIZE_PROTOTYPE_EPOCHS: int = 20
 # :param OPENAI_KEY:
 #       This string value has to be the OpenAI API key that should be used for the GPT-4 requests
 #       that will be needed to generate the natural language descriptions of the prototypes.
@@ -111,6 +117,11 @@ OPENAI_KEY: str = os.getenv('OPENAI_KEY')
 #       or not. If this is False, the entire description routine will be skipped during the
 #       cluster discovery.
 DESCRIBE_PROTOTYPE: bool = False
+# :param HYPOTHESIZE_PROTOTYPE:
+#       This boolean flag determines whether the prototype hypothesis should be generated at all
+#       or not. If this is False, the entire hypothesis routine will be skipped during the
+#       cluster discovery.
+HYPOTHESIZE_PROTOTYPE: bool = False
 
 
 __DEBUG__ = True
@@ -132,7 +143,7 @@ def optimize_prototype(e: Experiment,
                        **kwargs,
                        ) -> dict:
     
-    # For the embedding objective function we need some kind of anchor location to which we want to 
+     # For the embedding objective function we need some kind of anchor location to which we want to 
     # minimize the distance. For this we are simply going to use the cluster centroid.
     anchor = np.mean(cluster_embeddings, axis=0)
     
@@ -142,92 +153,50 @@ def optimize_prototype(e: Experiment,
     # should by themselves already be very close to the ideal cluster prototype and most likely only 
     # need minor refinements through the GA optimization.
     num_initial = min(e.INITIAL_POPULATION_SAMPLE, len(cluster_embeddings))
-    
-    anchor_distances = np.array([cosine(anchor, emb) for emb in cluster_embeddings])
-    indices = np.argsort(anchor_distances).tolist()[:num_initial]
-    
-    violation_radius = np.percentile(anchor_distances, 90)
-    print('MIN', anchor_distances[indices][:3], 'MEAN', np.mean(anchor_distances), 'MAX', np.max(anchor_distances), 'VIOL', violation_radius)
-    
-    #anchors = random.sample(cluster_embeddings[indices].tolist(), k=7)
-    anchors = cluster_embeddings[indices][:8]
-    anchor_graphs = [cluster_graphs[index] for index in indices]
-    # anchors = [anchor]
-    #anchors = random.sample(cluster_embeddings.tolist(), k=6)
-    anchors = [anchor]
-    
     elements_initial = []
-    for index in indices:
-        graph = copy_graph_dict(cluster_graphs[index])
-        smiles = graph['graph_repr'].item()
-
-        mol = Chem.MolFromSmiles(smiles)
-        smiles = Chem.MolToSmiles(mol, kekuleSmiles=True, isomericSmiles=False)
+    for graph in random.sample(cluster_graphs, k=num_initial):
         
-        # We actually HAVE TO clear those here or else it will fail. This is because the molecular mutation operations 
-        # do not preserve the additional graph attributes and it will cause issues to pass graphs through the model 
-        # where some of them have this attribute and some of them dont.
-        del graph['node_importances']
-        del graph['edge_importances']
-
-        elements_initial.append({
-            'graph': graph,
-            'value': smiles,
-        })
+        # elements_initial.append({
+        #     'graph': graph,
+        #     'value': processing.unprocess(graph)
+        # })
+        # continue
         
-    elements_initial.sort(key=lambda element: len(element['graph']['node_indices']), reverse=True)
-    elements_initial = elements_initial[:int(num_initial/2)]
-    print(len(elements_initial), num_initial)
+        # In the very first step we need to binarize the node explanation mask by using a simple 
+        # threshold.
+        node_mask = (graph['node_importances'][:, channel_index] > 0.5).astype(int)
+        
+        # Since the explanation mask tends to be too sparse in many situations we perform a one-hop expansion 
+        # of this mask here. So that function will propagate the mask label to all the nodes that are currently 
+        # adjacent to at least one other mask node.
+        node_mask = graph_expand_mask(graph, node_mask, num_hops=4)
+        
+        # Then we only want to extract connected subgraphs. But by the explanation mask alone it is not certain 
+        # that all the masked nodes are connected. So here we use this function which determines all the 
+        # connected regions for the masked part of the graph and ultimately decide to only use the largest 
+        # of those.
+        region_mask = graph_find_connected_regions(graph, node_mask)
+        regions = [v for v in set(region_mask) if v > -1]
+        # Although it should not happen, it is still possible that the explanation mask for individual 
+        # elements are empty which will also lead this regions list to be empty. To avoid errors we 
+        # need to skip the elements for which that is the case.
+        if not regions:
+            continue
+        
+        # Here we sort the regions descending by size so that we can later select only the largest 
+        # region for the subgraph extraction.
+        regions.sort(key=lambda r: np.sum((region_mask == r).astype(int)), reverse=True)
+
+        mask = (region_mask == regions[0]).astype(int)
+        if np.sum(mask) < 2:
+            continue
+        
+        sub_graph, _ , _ = extract_subgraph(graph, mask)
     
-    # elements_initial = []
-    # for graph in random.sample(cluster_graphs, k=num_initial):
-        
-    #     # In the very first step we need to binarize the node explanation mask by using a simple 
-    #     # threshold.
-    #     graph = copy_graph_dict(graph)
-    #     node_mask = (graph['node_importances'][:, channel_index] > 0.3).astype(int)
-        
-    #     # Since the explanation mask tends to be too sparse in many situations we perform a one-hop expansion 
-    #     # of this mask here. So that function will propagate the mask label to all the nodes that are currently 
-    #     # adjacent to at least one other mask node.
-    #     node_mask = graph_expand_mask(graph, node_mask, num_hops=4)
-        
-    #     # Then we only want to extract connected subgraphs. But by the explanation mask alone it is not certain 
-    #     # that all the masked nodes are connected. So here we use this function which determines all the 
-    #     # connected regions for the masked part of the graph and ultimately decide to only use the largest 
-    #     # of those.
-    #     region_mask = graph_find_connected_regions(graph, node_mask)
-    #     regions = [v for v in set(region_mask) if v > -1]
-    #     # Although it should not happen, it is still possible that the explanation mask for individual 
-    #     # elements are empty which will also lead this regions list to be empty. To avoid errors we 
-    #     # need to skip the elements for which that is the case.
-    #     if not regions:
-    #         continue
-        
-    #     # Here we sort the regions descending by size so that we can later select only the largest 
-    #     # region for the subgraph extraction.
-    #     regions.sort(key=lambda r: np.sum((region_mask == r).astype(int)), reverse=True)
-
-    #     mask = (region_mask == regions[0]).astype(int)
-    #     if np.sum(mask) < 2:
-    #         continue
-        
-    #     # We actually HAVE TO clear those here or else it will fail. This is because the molecular mutation operations 
-    #     # do not preserve the additional graph attributes and it will cause issues to pass graphs through the model 
-    #     # where some of them have this attribute and some of them dont.
-    #     del graph['node_importances']
-    #     del graph['edge_importances']
-        
-    #     sub_graph, _ , _ = extract_subgraph(graph, mask)
-    #     try:
-    #         value = processing.unprocess(sub_graph, clear_aromaticity=True)
-    #     except (RuntimeError, AttributeError):
-    #         continue
-         
-    #     elements_initial.append({
-    #         'graph': sub_graph,
-    #         'value': value
-    #     })
+        elements_initial.append({
+            'graph': sub_graph,
+            'value': processing.unprocess(sub_graph)
+        })
     
     # This function will execute the actual genetic optimization algorithm to create graph prototypes
     # that are as close to the cluster centroid (==anchor) as possible.
@@ -236,30 +205,19 @@ def optimize_prototype(e: Experiment,
             elements=elements,
             model=model,
             channel_index=channel_index,
-            anchors=anchors,
-            violation_radius=0.1,
+            anchors=[anchor],
+            violation_radius=0.2,
         ),
-        # fitness_func=lambda graphs: graph_matching_embedding_fitness(
-        #     graphs=graphs,
-        #     model=model,
-        #     channel_index=channel_index,
-        #     anchor_graphs=anchor_graphs,
-        #     processing=processing, 
-        #     check_edges=True,
-        # ),
-        sample_func=lambda: deepcopy(random.choice(elements_initial)),
+        sample_func=lambda: random.choice(elements_initial),
         mutation_funcs=[
-            lambda element: mutate_remove_bond(element, processing=processing),
-            lambda element: mutate_remove_atom(element, processing=processing),
-            lambda element: mutate_remove_atom(mutate_remove_bond(element, processing=processing), processing=processing),
-            lambda element: mutate_remove_atom(mutate_remove_atom(element, processing=processing), processing=processing),
-            #lambda element: mutate_modify_atom(element, processing=processing),
+            lambda *args, **kwargs: mutate_remove_node(*args, **kwargs, processing=processing),
+            lambda *args, **kwargs: mutate_remove_edge(*args, **kwargs, processing=processing),
         ],
-        num_epochs=10,
-        population_size=2000,
+        num_epochs=e.OPTIMIZE_PROTOTYPE_EPOCHS,
+        population_size=e.OPTIMIZE_PROTOTYPE_POPSIZE,
+        elite_ratio=0.1,
+        refresh_ratio=0.5,
         logger=e.logger,
-        elite_ratio=0.01,
-        refresh_ratio=0.1,
     )
     
     return element

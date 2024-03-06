@@ -14,6 +14,7 @@ from visual_graph_datasets.graph import graph_find_connected_regions
 from visual_graph_datasets.graph import extract_subgraph
 from graph_attention_student.torch.megan import Megan
 
+from megan_global_explanations.utils import EXPERIMENTS_PATH
 from megan_global_explanations.prototype.optimize import genetic_optimize
 from megan_global_explanations.prototype.optimize import embedding_distances_fitness_mse
 from megan_global_explanations.prototype.colors import mutate_modify_node, mutate_remove_node, mutate_remove_edge
@@ -59,7 +60,7 @@ SUBSET: t.Optional[int] = None
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the 
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(PATH, 'assets', 'models', 'rb_dual_motifs.ckpt')
+MODEL_PATH: str = os.path.join(EXPERIMENTS_PATH, 'assets', 'models', 'rb_dual_motifs.ckpt')
 
 # == CLUSTERING PARAMETERS ==
 # This section determines the parameters of the concept clustering algorithm itself.
@@ -76,7 +77,7 @@ MIN_CLUSTER_SIZE: int = 20
 #       This cluster defines the HDBSCAN behavior. Essentially it determines how conservative the 
 #       clustering is. Roughly speaking, a larger value here will lead to less clusters while 
 #       lower values tend to result in more clusters.
-MIN_SAMPLES: int = 10
+MIN_SAMPLES: int = 50
 
 # == PROTOTYPE OPTIMIZATION PARAMETERS ==
 # These parameters configure the process of optimizing the cluster prototype representatation
@@ -85,11 +86,11 @@ MIN_SAMPLES: int = 10
 #       This boolean flag determines whether the prototype optimization should be executed at 
 #       all or not. If this is False, the entire optimization routine will be skipped during the 
 #       cluster discovery.
-OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
+OPTIMIZE_CLUSTER_PROTOTYPE: bool = True
 # :param INITIAL_POPULATION_SAMPLE:
 #       This integer number determines the number of initial samples that are drawn from the cluster 
 #       members as the initial population of the prototype optimization GA procedure.
-INITIAL_POPULATION_SAMPLE: int = 200
+INITIAL_POPULATION_SAMPLE: int = 50
 # :param OPTIMIZE_PROTOTYPE_POPSIZE:
 #       This integer number determines the population size of the genetic optimization algorithm
 #       that is used to optimize the prototype representation.
@@ -112,7 +113,7 @@ DESCRIBE_PROTOTYPE: bool = False
 #       This boolean flag determines whether the UMAP visualization of the graph embeddings should be
 #       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
 #       artifact of the experiment.
-PLOT_UMAP: bool = False
+PLOT_UMAP: bool = True
 
 
 __DEBUG__ = True
@@ -194,18 +195,17 @@ def optimize_prototype(e: Experiment,
             model=model,
             channel_index=channel_index,
             anchors=[anchor],
-            violation_radius=0.01,
+            violation_radius=0.2,
         ),
         sample_func=lambda: random.choice(elements_initial),
         mutation_funcs=[
-            #mutate_modify_node,
             mutate_remove_node,
             mutate_remove_edge,
         ],
         num_epochs=e.OPTIMIZE_PROTOTYPE_EPOCHS,
         population_size=e.OPTIMIZE_PROTOTYPE_POPSIZE,
         elite_ratio=0.1,
-        refresh_ratio=0.2,
+        refresh_ratio=0.1,
         logger=e.logger,
     )
     

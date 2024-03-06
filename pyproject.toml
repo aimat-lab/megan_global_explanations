@@ -32,7 +32,7 @@ numpy = ">=1.23.2"
 python-decouple = ">=3.6"
 poetry-bumpversion = ">=0.3.0"
 graph-attention-student = ">=0.12.0"
-visual-graph-datasets = ">=0.12.0"
+visual-graph-datasets = ">=0.15.1"
 umap-learn = ">=0.5.3"
 hdbscan = ">=0.8.0"
 

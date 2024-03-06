@@ -17,6 +17,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from visual_graph_datasets.util import dynamic_import
 from visual_graph_datasets.data import VisualGraphDatasetReader
+from visual_graph_datasets.data import VisualGraphDatasetWriter
 from visual_graph_datasets.data import NumericJsonEncoder
 from visual_graph_datasets.processing.base import ProcessingBase
 from visual_graph_datasets.processing.base import create_processing_module
@@ -70,11 +71,13 @@ class ConceptWriter():
                  processing: ProcessingBase,
                  model: t.Optional[Megan] = None,
                  logger: logging.Logger = NULL_LOGGER,
+                 writer_cls: type = VisualGraphDatasetWriter,
                  ):
         self.path = path
         self.processing = processing
         self.model = model
         self.logger = logger
+        self.writer_cls = writer_cls
         
         # This attribute will later on hold the absolute path of where the model was actually saved 
         # to. This will be set in the self.write_model method.
@@ -149,13 +152,18 @@ class ConceptWriter():
         else:
             raise ValueError('No domain graph representation found for the given graph!')
                 
+        writer: VisualGraphDatasetWriter = self.writer_cls(
+            path=path,
+        )
+                
         # To write the graph we need to care about two things: The visualization image and the 
         self.processing.create(
             value=value,
             graph=graph,
             output_path=path,
             index=index,
-            additional_metadata=additional_metadata
+            additional_metadata=additional_metadata,
+            writer=writer,
         )
                 
     def write_concept(self,

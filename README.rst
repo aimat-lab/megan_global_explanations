@@ -54,7 +54,7 @@ complex downstream prediction tasks in the future
 🔔 News
 =======
 
-- **March 2024** Paper is submitted to the `2nd xAI world conference <https://xaiworldconference.com/2024/>`
+- **March 2024** Paper is submitted to the `2nd xAI world conference <https://xaiworldconference.com/2024/>`_
 
 ========================================
 ❓ What are Global Concept Explanations?
@@ -132,91 +132,107 @@ the dataset and the model and then extracting the concept explanations.
     in the current working directory.
     """
     import os
+    import sys
+    import pathlib
+    import logging
     import typing as t
 
+    from visual_graph_datasets.config import Config
+    from visual_graph_datasets.web import ensure_dataset
     from visual_graph_datasets.data import VisualGraphDatasetReader
     from graph_attention_student.torch.megan import Megan
 
+    from megan_global_explanations.utils import EXPERIMENTS_PATH
     from megan_global_explanations.main import extract_concepts
-    from megan_global_explanations.visualization import create_concept_report
+    from megan_global_explanations.visualization import create_concept_cluster_report
+
+    PATH = pathlib.Path(__file__).parent.absolute()
+
+    log = logging.Logger('00')
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter())
+    log.addHandler(handler)
 
     # ~ required parameters
 
-    DATASET_PATH: str = 'path/to/dataset'
-    MODEL_PATH: str = 'path/to/pretrained/model'
+    # The "ensure_dataset" method will try to download a dataset from the remote file 
+    # share server if it is not already present. If the dataset is already present, 
+    # the local version will be used. In any case, the function will return the absolute 
+    # string path to the dataset folder. 
+    DATASET_PATH: str = ensure_dataset('rb_dual_motifs', Config().load())
+    # Knowing the exact type of task (regression or classification) is important for 
+    # various operations during the concept clustering and report generation!
+    DATASET_TYPE: t.Literal['regression', 'classification'] = 'regression'
+    # We also need to load an existing model, from whose latent space the concept 
+    # explanations will be extracted.
+    MODEL_PATH: str = os.path.join(
+        EXPERIMENTS_PATH, 
+        'assets', 
+        'models', 
+        'rb_dual_motifs.ckpt'
+    )
+    # This is a dictionary that provides additional information about the channels that 
+    # the model uses.
+    # However, this dict is optional and does not necessarily have to be provided for the 
+    # concept clustering to work.
+    CHANNEL_INFOS: t.Dict[int, dict] = {
+        0: {'name': 'negative', 'color': 'skyblue'},
+        1: {'name': 'positive', 'color': 'coral'},
+    }
 
     # ~ loading the dataset
-    reader = VisualGraphDatasetReader(
-        path=DATASET_PATH,
-    )
+    # The dataset is assumed to be in the special "visual graph dataset (VGD)" format. 
+    # The special "VisualGraphDatasetReader" class will be used to load the dataset. 
+    # The "read" method will return a dictionary with the dataset elements and their 
+    # indices as keys.
+    reader = VisualGraphDatasetReader(path=DATASET_PATH)
     index_data_map: t.Dict[int, dict] = reader.read()
-    processing = reader.read_processing()
-    print(f'loaded dataset with {len(index_data_map)} elements.')
+    processing = reader.read_process()
+    log.info(f'loaded dataset with {len(index_data_map)} elements.')
 
     # ~ loading the model
+    # The model is assumed to be a MEGAN model. Therefore the "Megan" class will be 
+    # used to load the model from the given checkpoint file. The "load_from_checkpoint" 
+    # method will return the model instance.
     model = Megan.load_from_checkpoint(MODEL_PATH)
-    print(f'loaded model {model.__class__.__name__} with {model.num_channels} explanation channels.')
+    log.info(f'loaded model {model.__class__.__name__} with {model.num_channels} channels.')
 
     # ~ extracting the concept explanations
+    # The extract_concepts method will extract the concept explanations by finding 
+    # dense clusters in the the latent space of the model.
     concepts: t.List[dict] = extract_concepts(
         model=model,
         index_data_map=index_data_map,
         processing=processing,
-        # parameters for the HDBSCAN clustering algorithm
-        min_samples=10,
+        # parameters for the HDBSCAN clustering algorithm. The smaller the "min_samples" 
+        # parameter the more concept clusters will be found. However, this will also lead 
+        # to more redundancy - there might be multiple clusters for the same true motif.
+        min_samples=60,
         min_cluster_size=10,
-        # optimization of the cluster prototypes involves more effort
+        dataset_type=DATASET_TYPE,
+        channel_infos=CHANNEL_INFOS,
+        # optimization of the cluster prototypes involves more effort.
         optimize_prototypes=False,
+        logger=log,
     )
-    print(f'extracted {len(concepts)} concepts.')
-    
+    log.info(f'extracted {len(concepts)} concepts.')
+
     # ~ creating the report
     # The "create_concept_report" method will create a report PDF which visualizes 
     # all the information from the concept clustering. For every concept several pages 
     # with statistics, examples and descriptions will be created.
 
+    log.info(f'creating the concept clustering report...')
     report_path: str = os.path.join(os.getcwd(), 'concept_report.pdf')
-    create_concept_report(
-        concepts=concepts,
+    create_concept_cluster_report(
+        cluster_data_list=concepts,
         path=report_path,
+        dataset_type=DATASET_TYPE,
+        logger=log,
     )
+    log.info(f'report @ {report_path}')
 
-Saving and Loading Concept Information
-======================================
-
-Since it can take quite a long time to generate the concept extraction depending on the size of the dataset and the configuration, 
-it is encouraged to save the concept information as a persistent folder to the disk. The following code snippet illustrates how 
-the saving and loading of concept information can be done.
-
-.. code-block:: python
-
-    """
-    This script illustrates how to save and load the concept information to and from a folder 
-    representation on the disk. This is done using one of the already saved concept assets as 
-    an example.
-    """
-    import os
-    import typing as t
-
-    
-    from megan_global_explanations.utils import EXPERIMENT_PATH
-    from megan_global_explanations.data import ConceptReader
-    from megan_global_explanations.data import ConceptWriter
-
-    # ~ loading concept information
-    # The persistent representation of concept information is intentionally lightweight. Each concept 
-    # information folder itself contains one subfolder for each concept that was originally extracted.
-
-    CONCEPTS_PATH = os.path.join(EXPERIMENT_PATH, 'assets', 'concepts')
-
-    # ~ saving concept information
-    writer = ConceptWriter(
-        ConceptWriter.create_experiment_folder(
-            EXPERIMENT_PATH,
-            'assets',
-            'concepts',
-        ),
-    )
 
 ============================
 🧪 Computational Experiments
@@ -228,7 +244,37 @@ are defined as independent python modules in the ``experiments`` folder.
 The following list provides an overview and description of the most important experiments:
 
 - ``vgd_concept_extraction.py``: The base implementation for the concept clustering process based on a visual graph dataset 
-  and a pre-trained ``Megan`` model.
+  and a pre-trained ``Megan`` model. Depending on the parameter configuration, this experiment will perform the HDBSCAN based 
+  clustering, the optimization of the prototypes and the query to the GPT4 API to obtain a concept hypothesis.
+- ``vgd_concept_extraction__ba2motifs.py``: The specific implementation of the concept extraction for the synthetic graph classification 
+  dataset BA2Motifs.
+- ``vgd_concept_extraction__rb_dual_motifs.py``: The specific implementation of the concept extraction for the RbDualMotifs 
+  synthetic graph regression dataset. 
+- ``vgd_concept_extraction__aqsoldb.py``: The specific implementation for the AqSolDB dataset. This dataset is about the regression 
+  of the experimentally determined logS water solubility values of molecular graphs.
+- ``vgd_concept_extraction__mutagenicity.py``: The specific implementation for the Mutagenicity dataset. This dataset is about the 
+  the binary classification of whether a given molecular graph is mutagenic (causes mutations in the DNA of living organisms) or not.
+
+- ``explain_element.py``: This experiment loads a given visual graph dataset, a pre-trained MEGAN model and the persistently stored 
+  information about a concept clustering to create the local explanation for a specific element. The model is queried with the given 
+  graph element as an input. The model outputs the primary target value prediction as well as the local explanation masks. Additionally, 
+  the graph embeddings created by the model are used to create
+- ``explain_element__aqsoldb.py``: Uses a pre-trained model and existing concept clustering to generate explanations about water solubility 
+  for a single molecular graph in SMILES representation.
+
+==========================
+📎 Supplementary Materials
+==========================
+
+The repository contains the ``supplementary`` folder which includes the supplementary materials for the `paper <arxiv>`_. This folder 
+contains the following elements:
+
+- ``cluster_report_rb_dual_motifs.pdf``: The automatically generated concept clustering report PDF for the RbDualMotifs dataset that is 
+  referenced in the paper.
+- ``cluster_report_mutagenicity.pdf``: The automatically generated concept clustering report PDF for the Mutagenicity dataset that is 
+  referenced in the paper.
+- ``cluster_report_aqsoldb.pdf``: The automatically generated concept clustering report PDF for the AqSolDB dataset that is referenced 
+  in the paper.
 
 ==============
 📖 Referencing

@@ -150,6 +150,16 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
         for p, data in enumerate(cluster_data_list):
             cluster_index = data['index']
             
+            # 01.03.24 - backwards compatibility. Originally the concepts dictionaries were created in a way 
+            # to have the two separate attributes "graphs" and "elements" which were lists containing the 
+            # graph dict representations and the corresponding image paths of those graph elements. In the 
+            # new version though, these are combined into the "elements" list which is a list of visual 
+            # graph elements, that includes the image paths and the graphs!
+            # So here we convert the one format into the other, if it exists.
+            if 'elements' in data:
+                data['graphs'] = [element['metadata']['graph'] for element in data['elements']]
+                data['image_paths'] = [element['image_path'] for element in data['elements']]
+            
             # ~ Basic cluster statistics
             num_elements = len(data['graphs'])
             channel_indices = [k for i, k in data['index_tuples']]
@@ -223,9 +233,9 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
                 pred = graph['graph_prediction']
                 if isinstance(pred, np.ndarray):
                     if dataset_type == 'regression':
-                        pred = pred[0]
+                        predictions.append(pred[0])
                     else:
-                        pred = np.argmax(pred)
+                        predictions.append(np.argmax(pred))
                 # backwards compatibility: If the prediction happens to be just a value then we assume this is already 
                 # processed and we can just take it as it is.
                 else:

@@ -1,0 +1,5 @@
+{% for message in messages %}
+{{ message.role|upper }}
+{{ '=' * message.role|length }}
+{{ message.content }}
+{% endfor %}
