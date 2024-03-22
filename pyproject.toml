@@ -9,7 +9,7 @@ description = "Insert Description"
 license = "MIT license"
 authors = ["Jonas Teufel <jonseb1998@gmail.com>"]
 maintainers = ["Jonas Teufel <jonseb1998@gmail.com>"]
-readme = "README.rst"
+# readme = "README.rst"
 keywords = []
 packages = [
     { include = "megan_global_explanations" },
@@ -17,6 +17,12 @@ packages = [
 ]
 include = [
     "megan_global_explanations/VERSION",
+]
+exclude = [
+    "megan_global_explanations/experiments/results/*",
+#    "megan_global_explanations/experiments/assets/*",
+    "megan_global_explanations/_experiments/*",
+    "tests/*"
 ]
 
 [tool.poetry.scripts]
@@ -35,6 +41,7 @@ graph-attention-student = ">=0.12.0"
 visual-graph-datasets = ">=0.15.1"
 umap-learn = ">=0.5.3"
 hdbscan = ">=0.8.0"
+weasyprint = ">=61.1"
 
 [tool.poetry.dev-dependencies]
 pytest = ">=7.1.3"

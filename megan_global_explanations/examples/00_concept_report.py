@@ -83,10 +83,12 @@ concepts: t.List[dict] = extract_concepts(
     # to more redundancy - there might be multiple clusters for the same true motif.
     min_samples=60,
     min_cluster_size=10,
+    fidelity_threshold=0.5,
     dataset_type=DATASET_TYPE,
     channel_infos=CHANNEL_INFOS,
     # optimization of the cluster prototypes involves more effort.
     optimize_prototypes=False,
+    sort_similarity=False,
     logger=log,
 )
 log.info(f'extracted {len(concepts)} concepts.')
@@ -97,11 +99,12 @@ log.info(f'extracted {len(concepts)} concepts.')
 # with statistics, examples and descriptions will be created.
 
 log.info(f'creating the concept clustering report...')
-report_path: str = os.path.join(os.getcwd(), 'concept_report.pdf')
+report_path: str = os.path.join(PATH, 'concept_report.pdf')
 create_concept_cluster_report(
     cluster_data_list=concepts,
     path=report_path,
     dataset_type=DATASET_TYPE,
+    examples_type='centroid',
     logger=log,
 )
 log.info(f'report @ {report_path}')

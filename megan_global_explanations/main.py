@@ -90,6 +90,7 @@ def extract_concepts(model: Megan,
     concepts: t.List[dict] = []
     
     logger.info('starting the concept clustering...')
+    cluster_index: int = 0
     for channel_index in range(num_channels):
         
         logger.info(f'for channel {channel_index}')
@@ -98,12 +99,15 @@ def extract_concepts(model: Megan,
         # the given fidelity threshold. Only if samples show a certain minimal fidelity we can be sure that 
         # those explanations are actually meaningful for the predictions.
         
+        # These indices are now the *dataset indices* so the indices are only valid if applied to the 
+        # index data map!
         indices_channel = [index for index, graph in zip(indices, graphs) if graph['graph_fidelity'][channel_index] > fidelity_threshold]
         indices_channel = np.array(indices_channel)
+        
         graphs_channel = [index_data_map[index]['metadata']['graph'] for index in indices_channel]
         
         # channel_embeddings: (num_graphs, embedding_dim)
-        graph_embeddings_channel = np.array([graph['graph_embeddings'][channel_index] for graph in graphs_channel])
+        graph_embeddings_channel = np.array([graph['graph_embeddings'][:, channel_index] for graph in graphs_channel])
         clusterer = hdbscan.HDBSCAN(
             min_samples=min_samples,
             min_cluster_size=min_cluster_size,
@@ -112,17 +116,18 @@ def extract_concepts(model: Megan,
         )
         labels = clusterer.fit_predict(graph_embeddings_channel)
         
-        clusters = [label for label in set(labels) if label > 0]
+        clusters = [label for label in set(labels) if label >= 0]
         num_clusters = len(clusters)
         logger.info(f'found {num_clusters} from {len(graph_embeddings_channel)} embeddings')
         
-        for cluster_index in clusters:
+        for cluster_label in clusters:
             
-            mask_cluster = (labels == cluster_index)
-            graph_embeddings_cluster = graph_embeddings_channel[mask_cluster]
-            
-            cluster_centroid = np.mean(graph_embeddings_cluster, axis=0)
+            mask_cluster = (labels == cluster_label)
             indices_cluster = indices_channel[mask_cluster]
+            
+            graph_embeddings_cluster = graph_embeddings_channel[mask_cluster]
+            cluster_centroid = np.mean(graph_embeddings_cluster, axis=0)
+            
             elements_cluster = [index_data_map[index] for index in indices_cluster]
             graphs_cluster = [data['metadata']['graph'] for data in elements_cluster]
             index_tuples_cluster = [(index, channel_index) for index in indices_cluster]
@@ -138,17 +143,23 @@ def extract_concepts(model: Megan,
                 'index_tuples': index_tuples_cluster,
                 'embeddings': graph_embeddings_cluster,
                 'centroid': cluster_centroid,
+                'contribution': contribution_cluster,
                 'elements': elements_cluster,
                 'graphs': graphs_cluster,
                 'name': channel_infos[channel_index]['name'],
                 'color': channel_infos[channel_index]['color'],
             }
             concepts.append(concept)
+            cluster_index += 1
+            
+            logger.info(f' * cluster {cluster_index}'
+                        f' - {len(elements_cluster)} elements')
             
     if sort_similarity:
         
         logger.info('sorting the concepts by similarity...')
         concepts_sorted = []
+        concept_index = 0
         for channel_index in range(num_channels):
             
             concepts_channel = [concept for concept in concepts if concept['channel_index'] == channel_index]
@@ -169,9 +180,19 @@ def extract_concepts(model: Megan,
                 
                 index = np.argmin(centroid_distances[0])
                 concept = concepts_channel.pop(index)
+                concept['index'] = concept_index
+                concept_index += 1
+                
                 concepts_sorted.append(concept)
                 
         concepts = concepts_sorted
             
     return concepts
             
+            
+            
+def generate_concept_prototypes(concepts: list[dict],
+                                model: Megan,
+                                index_data_map: dict[int, dict]
+                                ):
+    pass
