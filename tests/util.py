@@ -9,6 +9,8 @@ from copy import deepcopy
 
 import numpy as np
 from visual_graph_datasets.data import VisualGraphDatasetReader
+from visual_graph_datasets.processing.base import ProcessingBase
+from visual_graph_datasets.util import dynamic_import
 from decouple import config
 
 PATH = pathlib.Path(__file__).parent.absolute()
@@ -19,8 +21,7 @@ LOG_TESTING = config('LOG_TESTING', cast=bool, default=True)
 LOG = logging.getLogger('Testing')
 LOG.setLevel(logging.DEBUG)
 LOG.addHandler(logging.NullHandler())
-if LOG_TESTING:
-    LOG.addHandler(logging.StreamHandler(sys.stdout))
+LOG.addHandler(logging.StreamHandler(sys.stdout))
     
 # For some functions we require an OpenAI key to be able to query the OpenAI API, so we load it from the
 # environment variables here. Specifically from the .env file that is located in the same folder as this
@@ -103,6 +104,19 @@ def load_mock_vgd() -> dict:
     reader = VisualGraphDatasetReader(path=path)
     index_data_map = reader.read()
     return index_data_map
+
+
+def load_mock_processing() -> ProcessingBase:
+    """
+    This function loads the processing instance for the mock dataset which is used for the testing 
+    by dynamically importing it from the "process.py" asset
+    
+    :returns: The BaseProcessing instance
+    """
+    path = os.path.join(ASSETS_PATH, 'process.py')
+    module = dynamic_import(path)
+    processing = module.processing
+    return processing
 
 
 # Here I want to load the .env file in the same folder as this module and expose all the env variables

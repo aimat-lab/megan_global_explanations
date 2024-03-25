@@ -36,7 +36,7 @@ class MockModel():
         for graph in graphs:
             info = {
                 'graph_output':     np.random.random(),
-                'graph_embedding':  np.random.random((self.embedding_dim, )),
+                'graph_embedding':  np.random.random((self.embedding_dim, self.num_channels)),
                 'node_importance':  np.random.random((len(graph['node_indices']), self.num_channels)),
                 'edge_importance':  np.random.random((len(graph['edge_indices']), self.num_channels)),
             }
