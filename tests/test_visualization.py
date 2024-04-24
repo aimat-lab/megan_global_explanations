@@ -16,10 +16,47 @@ from visual_graph_datasets.visualization.importances import plot_node_importance
 from visual_graph_datasets.visualization.importances import plot_edge_importances_background
 from megan_global_explanations.visualization import create_concept_cluster_report
 from megan_global_explanations.visualization import generate_contrastive_colors
+from megan_global_explanations.visualization import concept_umap_visualization
 
 from .util import ARTIFACTS_PATH
+from .util import LOG
 from .util import load_mock_clusters
 from .util import load_mock_vgd
+
+
+def test_concept_umap_visualization_works():
+    
+    # ~ preparation
+    num_elements = 100
+    embedding_dim = 10
+    num_channels = 2
+    
+    channel_infos = {
+        0: {'name': 'first', 'color': 'red'},
+        1: {'name': 'second', 'color': 'blue'},
+    }
+    
+    concepts: list[dict] = load_mock_clusters(
+        embedding_dim=embedding_dim, 
+        num_channels=num_channels
+    )  
+    embeddings = np.random.random(size=(num_elements, embedding_dim, num_channels))
+    
+    # ~ testing
+    fig, mappers = concept_umap_visualization(
+        concepts=concepts,
+        embeddings=embeddings,
+        channel_infos=channel_infos,
+        num_neighbors=10,
+        logger=LOG,
+    )
+    
+    assert isinstance(fig, plt.Figure)
+    assert len(mappers) != 0
+    
+    # ~ saving the figure
+    fig_path = os.path.join(ARTIFACTS_PATH, 'concept_umap_visualization_works.pdf')
+    fig.savefig(fig_path)
 
     
 def test_generate_contrastive_colors():

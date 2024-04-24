@@ -4,6 +4,7 @@ import tempfile
 import logging
 import typing as t
 
+import umap
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -18,6 +19,7 @@ from visual_graph_datasets.visualization.importances import PLOT_NODE_IMPORTANCE
 from visual_graph_datasets.visualization.importances import PLOT_EDGE_IMPORTANCES_OPTIONS
 from megan_global_explanations.utils import TEMPLATE_ENV, TEMPLATES_PATH
 from megan_global_explanations.utils import NULL_LOGGER
+from megan_global_explanations.utils import DEFAULT_CHANNEL_INFOS
 
 
 def generate_contrastive_colors(num: int) -> t.List[str]:
@@ -105,6 +107,160 @@ def animate_deepect_history(history: t.Dict[int, dict],
     )
     anim.save(output_path, writer='ffmpeg', fps=fps)
     return anim
+
+
+def concept_umap_visualization(concepts: list[dict],
+                               graphs: list[dict],
+                               channel_infos: dict[str, t.Any] = DEFAULT_CHANNEL_INFOS,
+                               fidelity_threshold: t.Optional[float] = None,
+                               num_neighbors: int = 100,
+                               min_dist: float = 0.0,
+                               spread: float = 1.0,
+                               metric: str = 'manhattan',
+                               repulsion_strength: float = 1.0,
+                               random_state: int = 42,
+                               plot_concepts: bool = True,
+                               base_figsize: int = 5,
+                               alpha: float = 0.3,
+                               logger: logging.Logger = NULL_LOGGER,
+                               ) -> tuple[plt.Figure, list[umap.UMAP]]:
+    """
+    Given a list of ``concepts`` and a list of ``graphs`` this function will create the 2D UMAP 
+    visualizations of each explanation channels embeddings seperately. Optionally the locations of 
+    concept cluster centroids will be added to these umapped visualizations as well.
+    
+    :param concepts: a list of dictionaries where each dictionary represents a concept cluster.
+        These concept dictionaries have a pre-defined format.
+    :param graphs: A list of graph dict representations. It is important that these graph dict 
+        representations were already updated to include the optional "graph_embeddings" attribute
+        as well. If the graphs do not include this property, the function will fail. This 
+        attribute can be obtained by running a model forward pass.
+    :param channel_infos: A dictionary that contains additional information about the channels
+        which can be used for the visualization such as the name of the channel and the associated 
+        color.
+    :param fidelity_threshold: An optional threshold value that can be used to filter out graphs
+        with a lower fidelity value than the given threshold. This filtering is only applied if the 
+        this value is not None. In this case, the graph dict representations have to include the 
+        optional "graph_fidelity" attribute as well.
+    :param num_neighbors: The number of neighbors to use for the UMAP dimensionality reduction
+    :param min_dist: The minimum distance to use for the UMAP dimensionality reduction
+    :param spread: The spread to use for the UMAP dimensionality reduction
+    :param metric: The metric to use for the UMAP dimensionality reduction
+    :param repulsion_strength: The repulsion strength to use for the UMAP dimensionality reduction
+    :param random_state: The random state to use for the UMAP dimensionality reduction
+    :param plot_concepts: A boolean flag that indicates whether the concept centroids should be
+        added to the visualization or not. If they are added, they will be visualized as crosess "x"
+        scattered to the mapped location of the concept cluster centroids and also including a text 
+        label with the cluster index.
+    :param base_figsize: The base figure size to use for the visualization
+    :param alpha: The alpha value to use for the scatter plot points
+    :param logger: An optional logger instance to use for logging
+    
+    :returns: A tuple containing the matplotlib figure and a list of the umap mappers that were used
+        for the dimensionality reduction
+    """
+    num_channels: int = len(set([concept['channel_index'] for concept in concepts]))
+    
+    fig, rows = plt.subplots(
+        ncols=num_channels,
+        nrows=1,
+        figsize=(base_figsize * num_channels, base_figsize),
+        squeeze=False,
+    )
+    
+    # ~ UMAP dimensionality reduction
+    # In this first step we need to create the dimensionality reduction with the umap algorithm for each 
+    # of the channels separately. These mappings are based on the given list of embedding vectors.
+    
+    logger.info(f'creating UMAP visualizations for {num_channels} channels')
+    mappers: list[umap.UMAP] = []
+    for channel_index in range(num_channels):
+        
+        embeddings_channel = []
+        for graph in graphs:
+            
+            if (fidelity_threshold is not None) and (graph['graph_fidelity'][channel_index] < fidelity_threshold):
+                continue
+            
+            embeddings_channel.append(graph['graph_embeddings'][:, channel_index])
+            
+        # graph_embeddings_channel: (num_elements, num_dimensions)
+        embeddings_channel = np.array(embeddings_channel)
+        
+        ax = rows[0][channel_index]
+        # This dictionary contains additional information about the channel which can be used for 
+        # the visualization such as the name of the channel and the associated color.
+        channel_info: dict = channel_infos[channel_index]
+        
+        logger.info(f'* channel {channel_index}')
+        
+        # It is possible to pass in an external mapper instance by defining a custom 
+        # attribute in the channel's information dict.
+        if 'mapper' in channel_info:
+            mapper = channel_info['mapper']
+            
+        # However, the default case is that we create a new mapper instance and fit it 
+        # to the given embeddings.
+        else:
+            mapper = umap.UMAP(
+                n_neighbors=num_neighbors,
+                min_dist=min_dist,
+                n_components=2,
+                metric=metric,
+                random_state=random_state,
+                repulsion_strength=repulsion_strength,
+                spread=spread,
+            )
+            logger.info('   fitting mapper...')
+            mappings_channel = mapper.fit(embeddings_channel)
+        
+        mappers.append(mapper)
+        mappings_channel = mapper.transform(embeddings_channel)
+
+        logger.info('   plotting...')
+        ax.scatter(
+            mappings_channel[:, 0], mappings_channel[:, 1], 
+            color=channel_info['color'],
+            alpha=alpha,
+            edgecolors='none',
+        )
+        ax.set_title(f'UMAP Projection\n'
+                     f'Channel {channel_index} - {channel_info["name"]}')
+        ax.set_xlabel('umap dimension 1')
+        ax.set_ylabel('umap dimension 2')
+        
+    # ~ addding concepts
+    # At this point we already have the umap projections for both of the channels, which are 
+    # represented as 2D scatter plots with all the given embeddings. Now we want to add the 
+    # concept information to those plots. For that we go through all the concepts and 
+    # plot the projection of their centroids into the plots as well.
+    
+    if plot_concepts:
+        
+        logger.info('adding the concept centroids...')
+        for concept in concepts:
+            
+            logger.info(f' * concept {concept["index"]}')
+            # Based on the channel index with which the concept is associated we can then select 
+            # the appropriate umap mapper and then project the centroid of the concept into the
+            # corresponding figure
+            channel_index = concept['channel_index']
+            ax = rows[0][channel_index]
+            mapper: umap.UMAP = mappers[channel_index]
+            
+            mapping = mapper.transform([concept['centroid']])[0]
+            ax.scatter(
+                mapping[0], mapping[1],
+                color='black',
+                marker='x',
+            )
+            ax.text(
+                mapping[0], mapping[1],
+                f'({concept["index"]})',
+                color='black',
+            )
+    
+    return fig, mappers
 
 
 def create_concept_cluster_report(cluster_data_list: t.List[dict],

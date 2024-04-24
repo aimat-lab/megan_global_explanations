@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import traceback
 import typing as t
 from collections import defaultdict
 
@@ -16,14 +17,12 @@ from visual_graph_datasets.processing.base import ProcessingBase
 
 from megan_global_explanations.utils import NULL_LOGGER
 from megan_global_explanations.utils import extend_graph_info
+from megan_global_explanations.utils import TEMPLATE_ENV
+from megan_global_explanations.utils import DEFAULT_CHANNEL_INFOS
 from megan_global_explanations.prototype.optimize import genetic_optimize
 from megan_global_explanations.prototype.optimize import embedding_distances_fitness_mse
+from megan_global_explanations.gpt import query_gpt
 
-
-DEFAULT_CHANNEL_INFOS = defaultdict(lambda: {
-    'name': 'channel',
-    'color': 'lightgray',
-})
 
 
 def extract_concepts(model: Megan,
@@ -410,8 +409,8 @@ def generate_concept_prototypes(concepts: list[dict],
         prototype = {
             'image_path': image_path,
             'metadata': {
-                'graph': prototype_graph,
-                'repr': prototype_value,
+                'graph':    prototype_graph,
+                'repr':     prototype_value,
             },
         }
         # A concept can theoretically be associated with multiple prototypes, so here we add this list of prototypes 
@@ -421,4 +420,73 @@ def generate_concept_prototypes(concepts: list[dict],
             
         concept_info['prototypes'].append(prototype)
         
+    return concepts
+
+
+def generate_concept_hypotheses(concepts: list[dict],
+                                task_name: str,
+                                task_description: str,
+                                openai_key: str,
+                                contribution_func: t.Callable[[int, float], str] = lambda cont: f'{cont:.2f}',
+                                system_template: str = 'system_message_chemistry.j2',
+                                user_template: str = 'user_message_chemistry.j2',
+                                logger: logging.Logger = NULL_LOGGER,
+                                ):
+    """
+    This function will 
+    
+    """
+    
+    system_temp = TEMPLATE_ENV.get_template(system_template)
+    system_message = system_temp.render({'description': task_description})
+    
+    for concept in concepts:
+        
+        logger.info(f' * generating hypothesis for concept {concept["index"]}')
+
+        # First of all we need to check whether the current concept has at least one prototype associated 
+        # with it because the prototype is the means by which the concept pattern is communicated to the 
+        # language model.
+        if not 'prototypes' in concept or len(concept['prototypes']) == 0:
+            logger.info(f'   concept has no prototype, skipping...')
+            continue
+    
+        # ~ preparing the prompt
+        # The language model prompt consists of two important parts: the system message and the user message.
+        # The system message defines the generall task that the language model should perform. The user message 
+        # is the specific evidence for the current concept.
+
+        # This is supposed to be a string that encodes the information about *how* the concept impacts the 
+        # property. For regression tasks, this is usually just the raw contribution value (average channel 
+        # fidelity over all cluster members) while in classification this should be encoded into a more 
+        # qualitative description "low", "medium", "high" etc.
+        # The contribution_func is supposed to turn the raw numeric contribution value into this string
+        contribution: str = contribution_func(concept['channel_index'], concept['contribution'])
+
+        user_temp = TEMPLATE_ENV.get_template(user_template)
+        user_message = user_temp.render({
+            'prototypes': concept['prototypes'], 
+            'name': task_name,
+            'contribution': contribution,   
+        })
+
+        try:
+            hypothesis, messages = query_gpt(
+                api_key=openai_key,
+                system_message=system_message,
+                user_message=user_message,
+            )
+        except Exception as exc:
+            logger.info(f'   error during hypothesis generation: {exc}')
+            traceback.print_exc()
+            continue
+            
+        # ~ updating the concept
+        # Now that we have obtained the hypothesis string from the language model, we can add it to the 
+        # concept dict so that it may be processed in the subsequent steps. Canonically, the hypothesis
+        # is simply added to the concept dict as the additional "hypothesis" attribute
+        logger.info(f'   obtained a hypothesis with {len(hypothesis)} characters')
+        concept['hypothesis'] = hypothesis
+
+
     return concepts

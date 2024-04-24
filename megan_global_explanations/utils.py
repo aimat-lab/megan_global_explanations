@@ -7,6 +7,7 @@ import tempfile
 import random
 import subprocess
 from typing import List
+from collections import defaultdict
 import typing as t
 
 import click
@@ -40,6 +41,18 @@ TEMPLATE_ENV.filters.update(**{
 NULL_LOGGER = logging.Logger('NULL')
 NULL_LOGGER.addHandler(logging.NullHandler())
 
+
+# Some functions of this package require an optional parameter called "channel_infos". This parameter is 
+# supposed to be a dictionary which contains various information about the different explanation channels 
+# of the model. The keys of this dict are supposed to be the integer channel indices and the values are 
+# again dictionaries which contain information associated with string keys. 
+# However, this channel_infos dicts is optional, therefore we define a default value for it here. Since 
+# this is a default dict it will work for any channel index as a key and always return the same dict 
+# as a value.
+DEFAULT_CHANNEL_INFOS = defaultdict(lambda: {
+    'name': 'channel',
+    'color': 'lightgray',
+})
 
 # == CLI RELATED ==
 

@@ -156,15 +156,20 @@ class ConceptWriter():
             path=path,
         )
                 
-        # To write the graph we need to care about two things: The visualization image and the 
-        self.processing.create(
-            value=value,
-            graph=graph,
-            output_path=path,
-            index=index,
-            additional_metadata=additional_metadata,
-            writer=writer,
-        )
+        # To actually write the given graph as a visual graph element (a visualization PNG file and a 
+        # metadata JSON file) we use the corresponding Processing instance. The "create" method will 
+        # take care of this.
+        try:
+            self.processing.create(
+                value=value,
+                graph=graph,
+                output_path=path,
+                index=index,
+                additional_metadata=additional_metadata,
+                writer=writer,
+            )
+        except Exception as exc:
+            print(f'Processing of the graph "{value}" failed with exception: {exc}')
                 
     def write_concept(self,
                       index: int,
@@ -200,7 +205,7 @@ class ConceptWriter():
                     graph=graph,
                     index=index,
                     path=prototypes_path,
-                    additional_metadata=prototype,
+                    additional_metadata=prototype['metadata'],
                 )
                 
         # ~ graph elements
