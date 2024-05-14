@@ -1,0 +1,6 @@
+The structure is represented by the following SMILES representations
+{% for prototype in prototypes %}
+- {{ prototype['metadata']['repr'] }}
+{% endfor %}
+
+This structure has been linked to the property "{{ name }}" with contribution of {{ contribution }}
