@@ -74,7 +74,7 @@ prototype-based explanations and concept-based explanations among others.
 over many individual instances. The basic idea is to identify certain generalizable *concepts* which are then connected to a certain impact 
 toward the model's prediction outcome. One such concept is generally defined as a common underlying pattern that is shared among multiple instances 
 of the dataset. From a technical perspective, a concept can be defined as a set of input fragments. What exactly these input fragments are differs 
-between application domains. In image processing, for example, these fragments are super pixels or image segments and in langauge processing they 
+between application domains. In image processing, for example, these fragments are super pixels or image segments and in language processing they 
 can be words or phrases. In the graph processing domain, these input fragments are subgraph motifs which can be contained in multiple different 
 graphs of the dataset.
 
