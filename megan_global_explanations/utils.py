@@ -14,8 +14,6 @@ import click
 import jinja2 as j2
 import numpy as np
 from sklearn.metrics import pairwise_distances
-from graph_attention_student.training import EpochCounterCallback
-
 
 PATH = pathlib.Path(__file__).parent.absolute()
 VERSION_PATH = os.path.join(PATH, 'VERSION')
@@ -199,53 +197,3 @@ def sort_cluster_centroids(cluster_centroid_map: dict,
 
     return label_map
 
-
-class RecordIntermediateEmbeddingsCallback(EpochCounterCallback):
-    
-    def __init__(self, 
-                 epoch_step: int,
-                 elements: t.List[t.Any],
-                 active: bool = True,
-                 logger: logging.Logger = NULL_LOGGER,
-                 embedding_func: t.Callable = lambda mdl, els: mdl.embedd_graphs(els),
-                 ):
-        EpochCounterCallback.__init__(self)
-        self.epoch_step = epoch_step
-        self.elements = elements
-        self.active = active
-        self.logger = logger
-        self.embedding_func = embedding_func
-        
-        self.epoch_embeddings_map = {}
-        
-    def on_epoch_end(self, epoch, logs=None):
-        if self.active and self.epoch % self.epoch_step == 0:
-            
-            # embeddings: (B, D) or (B, D, K) depending whether its a multi channel model or not
-            embeddings = self.embedding_func(self.model, self.elements)
-            self.epoch_embeddings_map[self.epoch] = embeddings
-            
-            self.logger.info(f' * stored intermediate embeddings at epoch {self.epoch}')
-            
-            
-# == GRAPH UTILITY ==
-
-def extend_graph_info(index_data_map: dict):
-    """
-    This function extends the information contained in the graph dicts within the given ``index_data_map`` 
-    representation of a visual graph dataset. In reality, this function will simply copy certain information
-    from the metadata of the elements direclty into the graph dict, which is needed for some processing 
-    steps.
-    
-    :param index_data_map: The visual graph dataset representation
-    
-    :returns: None, the modification is done in place.
-    """
-    for index, data in index_data_map.items():
-        graph = data['metadata']['graph']
-        graph['graph_index'] = data['metadata']['index']
-        
-        if 'repr' in data['metadata']:
-            graph['graph_repr'] = data['metadata']['repr']
-        else:
-            graph['graph_repr'] = data['metadata']['value']

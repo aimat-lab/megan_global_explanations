@@ -72,12 +72,14 @@ class ConceptWriter():
                  model: t.Optional[Megan] = None,
                  logger: logging.Logger = NULL_LOGGER,
                  writer_cls: type = VisualGraphDatasetWriter,
+                 write_elements: bool = False,
                  ):
         self.path = path
         self.processing = processing
         self.model = model
         self.logger = logger
         self.writer_cls = writer_cls
+        self.write_elements = write_elements
         
         # This attribute will later on hold the absolute path of where the model was actually saved 
         # to. This will be set in the self.write_model method.
@@ -218,6 +220,22 @@ class ConceptWriter():
         # the dataset here.
         if 'elements' in concept:
             
+            # However! Optionally, if the corresponding flag is set, we DO want to save the graphs in their 
+            # entirety in the form of a visual graph dataset. This is mainly required for cases where we want 
+            # to export the concepts but really cant get access to the original dataset...
+            if self.write_elements:
+                
+                elements_path = os.path.join(concept_path, 'elements')
+                os.mkdir(elements_path)
+                for element in concept['elements']:
+                    graph = element['metadata']['graph']
+                    self.write_graph(
+                        graph=graph,
+                        index=index,
+                        path=elements_path,
+                        additional_metadata=element['metadata'],
+                    ) 
+            
             for data in concept['elements']:
                 # This function removes all the redundant information from the visual graph element dict aka all the 
                 # information that is already contained in the dataset anyways. So that after this function the resulting 
@@ -282,31 +300,26 @@ class ConceptReader():
         return self.metadata
         
     def load_dataset(self) -> None:
+        
         # If the given "dataset" is a dict, it will be assumed that this is directly the already loaded 
         # index_data_map representation of the dataset.
         if isinstance(self.dataset, dict):
             self.index_data_map = self.dataset
             return
         
+        dataset_path = None
+        
         # If the value is instead a string, then it will be assumed to be the absolute string path to the 
         # dataset, in which case we can create a new reader instance to load it into memory
-        elif isinstance(self.dataset, str):
+        if isinstance(self.dataset, str):
             dataset_path = self.dataset
-        
-        # The last option is that no dataset has been given as a parameter, in this case we will assume that 
-        # the dataset is referenced in the metadata of the concept clustering itself.
-        elif isinstance(self.dataset, None):
-            dataset_path = self.metadata['dataset_path']
-            dataset_path = resolve_path(dataset_path, self.path)
 
-        assert os.path.exists(dataset_path), f'dataset path "{dataset_path}" does not exist!'
-        assert os.path.isdir(dataset_path), f'dataset path "{dataset_path}" is not a directory!'
-
-        reader = self.reader_cls(
-            path=self.dataset,
-            logger=self.logger,   
-        )
-        self.index_data_map = reader.read()
+        if dataset_path is not None:
+            reader = self.reader_cls(
+                path=self.dataset,
+                logger=self.logger,   
+            )
+            self.index_data_map = reader.read()
         
     def load_model(self) -> None:
         
@@ -318,7 +331,7 @@ class ConceptReader():
             model_path = resolve_path(self.metadata['model_path'])
             assert model_path and os.path.exists(model_path), 'The saved model path does not exist!'
             
-            self.model_cls.load_from_checkpoint(model_path)
+            self.model_cls.load(model_path)
         
     def read(self) -> tg.ConceptData:
         
@@ -356,6 +369,7 @@ class ConceptReader():
         index: int = 0
         for element in elements:
             element_path = os.path.join(self.path, element)
+            
             if os.path.isdir(element_path):
                 self.logger.info(f' * reading concept {index}')
                 concept = self.read_concept_from_path(
@@ -389,19 +403,39 @@ class ConceptReader():
         # visual graph elements that represent the graphs. All the actual data regarding the graph structure 
         # had been removed and now we load that again from the visual graph dataset.
         
-        self.logger.info(f'   querying the model with concept elements...')
-        elements = concept['elements']
-        indices = [element['metadata']['index'] for element in elements]
-        graphs = deepcopy([self.index_data_map[index]['metadata']['graph'] for index in indices])
+        # 13.09.24 - we'll allow the dataset/index_data_map to be none, BUT if that is the case we expect that 
+        # there exists a "elements" folder in the concept folder which contains the elements directly in the 
+        # format of a visual graph dataset.
+        if self.index_data_map is not None:
+            self.logger.info(f'   loading graph information from dataset...')
+            elements = concept['elements']
+            indices = [element['metadata']['index'] for element in elements]
+            graphs = deepcopy([self.index_data_map[index]['metadata']['graph'] for index in indices])
         
-        self.logger.info(f'   updating graph information...')
-        self.update_graphs(graphs)
-        for index, element, graph in zip(indices, elements, graphs):
-            element.update(deepcopy(self.index_data_map[index]))
-            element['metadata']['graph'] = graph
+            for index, element, graph in zip(indices, elements, graphs):
+                element.update(deepcopy(self.index_data_map[index]))
+                element['metadata']['graph'] = graph
+        
+        else:
+            self.logger.info('    no dataset. loading graphs directly...')
+
+            elements_path = os.path.join(concept_path, 'elements')
+            assert os.path.exists(elements_path), f'no dataset given and concept is missing "elements" folder!'
             
-        # ~ optional
-        # Everything else is optional and not guaranteed to be contained within the folder.
+            # With this folder we can simply use the reader instance to construct our graph instances.
+            reader = self.reader_cls(elements_path)
+            index_data_map = reader.read()
+            graphs = [data['metadata']['graph'] for data in index_data_map.values()]
+        
+        # The "update_graphs" method will use the loaded model to attach additional information to the graphs
+        # such as the predictions, the embeddings etc.
+        self.logger.info(f'   updating graph information with model...')
+        self.update_graphs(graphs)
+            
+        # ~ optional: prototypes
+        # Optionally (not always) each concept folder may also contain an additional "prototypes" folder. This 
+        # folder contains the prototype elements of the concept cluster. These are stripped down elements which 
+        # are meant to represent the underlying pattern of the cluster directly.
         
         prototypes_path = os.path.join(concept_path, 'prototypes')
         if os.path.exists(prototypes_path):
@@ -414,7 +448,6 @@ class ConceptReader():
             self.update_graphs(prototype_graphs)
             
             concept['prototypes'] = prototypes
-            
             
         return concept
         

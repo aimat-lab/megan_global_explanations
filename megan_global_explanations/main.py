@@ -16,7 +16,6 @@ from graph_attention_student.utils import array_normalize
 from visual_graph_datasets.processing.base import ProcessingBase
 
 from megan_global_explanations.utils import NULL_LOGGER
-from megan_global_explanations.utils import extend_graph_info
 from megan_global_explanations.utils import TEMPLATE_ENV
 from megan_global_explanations.utils import DEFAULT_CHANNEL_INFOS
 from megan_global_explanations.prototype.optimize import genetic_optimize
@@ -313,8 +312,8 @@ def generate_concept_prototypes(concepts: list[dict],
     :returns: None
     """
     
-    logger.info('extending the graph information...')
-    extend_graph_info(index_data_map)
+    #logger.info('extending the graph information...')
+    #extend_graph_info(index_data_map)
     
     logger.info('starting the prototype generation...')
     for concept_info in concepts:

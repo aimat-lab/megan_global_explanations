@@ -6,7 +6,7 @@
 .. |python-version| image:: https://img.shields.io/badge/Python-3.8.0-green.svg
     :target: https://www.python.org/
 
-.. |version| image:: https://img.shields.io/badge/version-0.2.0-orange.svg
+.. |version| image:: https://img.shields.io/badge/version-0.2.1-orange.svg
     :target: https://www.python.org/
 
 .. image:: overview.png

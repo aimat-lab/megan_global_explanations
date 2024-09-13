@@ -86,6 +86,9 @@ CHANNEL_INFOS: t.Dict[int, dict] = defaultdict(lambda: {
     'name': 'n/a',
     'color': 'lightgray'
 })
+# :param SUBSET:
+#       Optionally can be used to define an integer number of elements that should be randomly sampled from 
+#       the dataset to be used for the clustering. If this is None, the entire dataset will be used.
 SUBSET: t.Optional[int] = None
 
 # == MODEL PARAMETERS == 
@@ -354,8 +357,16 @@ def experiment(e: Experiment):
     )
     num_graphs = len(index_data_map)
     e.log(f'loaded dataset with {num_graphs} elements')
-    graphs = [data['metadata']['graph'] for data in index_data_map.values()]
-    indices = np.array([index for index in index_data_map.keys()])
+    indices = list(index_data_map.keys())
+    # 03.06.24
+    # For the particularly large dataset we need a method to reduce the number of graphs for the clustering 
+    # because the clustering will become a significant runtime bottleneck otherwise...
+    if e.SUBSET and len(indices) > e.SUBSET:
+        e.log(f'sub-sampling the graphs to reduce the number of elements to {e.SUBSET}...')
+        indices = random.sample(indices, k=e.SUBSET)
+    
+    graphs = [index_data_map[index]['metadata']['graph'] for index in indices]
+    e.log(f'working with {len(graphs)} graphs and {len(indices)} indices...')
     
     # ~ loading the model
     # Besides the dataset we also have to load the model from its persistent representation on the disk
@@ -440,6 +451,7 @@ def experiment(e: Experiment):
     for channel_index in range(num_channels):
         
         e.log(f'> CHANNEL {channel_index}')
+        
         # Here we filter according to the fidelity - we only want elements with a certain minumum fidelity to be 
         # eligible for the clustering to begin with. The reasoning here is that there are a lot of elements which 
         # do not have any activation in one of the channels and therefore also have ~0 fidelity for that channel.

@@ -44,6 +44,9 @@ class MockModel():
             
         return infos
     
+    def leave_one_out_deviations(self, graphs: t.List[dict]):
+        return np.random.random((len(graphs), 1, self.num_channels))
+    
     def save(self, path: str):
         with open(path, mode='w') as file:
             json.dump(self.params, file)
