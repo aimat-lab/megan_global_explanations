@@ -83,7 +83,7 @@ def test_create_concept_cluster_report_basically_works():
     clustering operation in a visually pleasing way to the user.
     """
     num_clusters = 3
-    output_path = os.path.join(ARTIFACTS_PATH, 'test_create_concept_cluster_report_baisically_works.pdf')
+    output_path = os.path.join(ARTIFACTS_PATH, 'test_create_concept_cluster_report_basically_works.pdf')
     
     cluster_data_list = load_mock_clusters()
     

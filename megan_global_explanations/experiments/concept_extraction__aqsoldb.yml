@@ -1,0 +1,78 @@
+# Rudimentary concept extraction config for AqSolDB dataset
+# This YAML config extends the base experiment and disables complex features
+# (prototype optimization, GPT descriptions) for simple concept clustering.
+#
+# Usage:
+#   pycomex concept_extraction__aqsoldb.yml
+#
+# Required:
+#   - A trained MEGAN model checkpoint (MODEL_PATH)
+#   - A CSV file with SMILES and target values (CSV_PATH)
+#   - Optionally a processing module (PROCESSING_PATH)
+
+extend: concept_extraction.py
+
+parameters:
+  # == CSV PARAMETERS ==
+  # Path to your CSV file containing molecular data
+  CSV_PATH: '/media/data/Downloads/aqsoldb_.csv'
+  # Column containing SMILES strings
+  VALUE_COLUMN_NAME: 'SMILES'
+  # Column(s) containing target values
+  TARGET_COLUMN_NAMES:
+    - 'Solubility'
+  # Optional: column with unique indices (null = auto-assign)
+  INDEX_COLUMN_NAME: null
+
+  # == PROCESSING PARAMETERS ==
+  # Path to process.py with custom Processing instance
+  # Set to null to use default MoleculeProcessing
+  PROCESSING_PATH: '/media/ssd2/Programming/graph_attention_student/graph_attention_student/experiments/results/train_model__megan__aqsoldb/debug/process.py'
+
+  # == DATASET PARAMETERS ==
+  DATASET_TYPE: 'regression'
+  # Channel info for visualization (2 channels typical for regression)
+  CHANNEL_INFOS:
+    0:
+      name: 'negative'
+      color: 'lightskyblue'
+    1:
+      name: 'positive'
+      color: 'lightcoral'
+  # Optional: subsample large datasets (null = use all)
+  SUBSET: null
+
+  # == MODEL PARAMETERS ==
+  # Path to trained MEGAN model checkpoint
+  MODEL_PATH: '/media/ssd2/Programming/graph_attention_student/graph_attention_student/experiments/results/train_model__megan__aqsoldb/debug/model.ckpt'
+
+  # == CLUSTERING PARAMETERS ==
+  # Minimum channel fidelity to include element in clustering
+  FIDELITY_THRESHOLD: 0.5
+  # HDBSCAN minimum cluster size
+  MIN_CLUSTER_SIZE: 15
+  # HDBSCAN min_samples (higher = more conservative)
+  MIN_SAMPLES: 5
+  # Cluster selection method: 'leaf' or 'eom'
+  CLUSTER_SELECTION_METHOD: 'leaf'
+  # Sort clusters by similarity for better report readability
+  SORT_SIMILARITY: true
+
+  # == PROTOTYPE OPTIMIZATION (DISABLED) ==
+  # Set to false to skip genetic algorithm prototype optimization
+  OPTIMIZE_CLUSTER_PROTOTYPE: false
+  # These are ignored when OPTIMIZE_CLUSTER_PROTOTYPE is false:
+  INITIAL_POPULATION_SAMPLE: 200
+  OPTIMIZE_PROTOTYPE_POPSIZE: 1000
+  OPTIMIZE_PROTOTYPE_EPOCHS: 50
+
+  # == GPT FEATURES (DISABLED) ==
+  # Set to false to skip GPT-4 API calls
+  DESCRIBE_PROTOTYPE: false
+  HYPOTHESIZE_PROTOTYPE: false
+  # Not needed when above are disabled:
+  # OPENAI_KEY: 'your-api-key'
+
+  # == VISUALIZATION ==
+  # Enable UMAP visualization of embedding space
+  PLOT_UMAP: true

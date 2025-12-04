@@ -19,3 +19,19 @@ Initial version
 
 - Modified the Reader and Writer classes to support the direct export and imports of the elements as visual graph elements 
   in the format of a visual graph dataset folder.
+
+0.2.2 - 16.09.2024
+------------------
+
+- Fixed the Reader class to actually use the elements that were read with VisualGraphDatasetReader in the case of 
+  explicitly passing the concepts.
+
+0.3.0 - 04.12.2025
+------------------
+
+- Added the `concept_extraction.py` experiment which is a base experiment that does essentially the same 
+  as the existing `vgd_concept_extraction.py` only that it does not need a pre-compiled visual graph dataset 
+- Added `concept_extraction__aqsdolb.py`
+- The concept extraction experiments now explicitly export the concept centroids in a JSON file.
+- Refactored the `README.rst` file to now list the experiments based on the simple CSV files 
+  first and only list the VGD based experiments as the second option

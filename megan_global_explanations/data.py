@@ -10,6 +10,7 @@ import shutil
 import logging
 import collections
 import typing as t
+import typing as typ
 import visual_graph_datasets.typing as tv
 from copy import deepcopy
 
@@ -26,6 +27,24 @@ from graph_attention_student.torch.megan import Megan
 import megan_global_explanations.typing as tg
 from megan_global_explanations.utils import NULL_LOGGER
 from megan_global_explanations.utils import safe_int
+
+
+"""
+A concept dict contains information about a single concept (cluster). This information includes 
+the following keys:
+
+- index: The integer index of the concept within the scope of the other concepts.
+- channel_index: The integer index of the Megan model's channel that this concept was extracted from.
+- centroid: A numpy float array of shape (D, ) representing the cluster centroid (the average embedding of the cluster), 
+    where D is the dimensionality of the latent space.
+- embeddings: A numpy float array of shape (N, D) containing the embeddings of all the elements that are associated 
+    with this concept, where N is the number of elements and D is the dimensionality of the latent space.
+- elements: A list of all the elements associated with the concept where each element is a GraphDict representation.
+- prototypes: (optional) A list of all the prototypes associated with the concept where each prototype is a 
+    GraphDict representation.
+"""
+ConceptDict = t.Dict[str, t.Any]
+
 
 # ~ Implementations
 
@@ -153,6 +172,8 @@ class ConceptWriter():
             value = graph['graph_repr']
         else:
             raise ValueError('No domain graph representation found for the given graph!')
+        
+        value = str(value)
                 
         writer: VisualGraphDatasetWriter = self.writer_cls(
             path=path,
@@ -170,8 +191,8 @@ class ConceptWriter():
                 additional_metadata=additional_metadata,
                 writer=writer,
             )
-        except Exception as exc:
-            print(f'Processing of the graph "{value}" failed with exception: {exc}')
+        except TypeError as exc:
+            print(f'Processing of the graph "{value}"({type(value)}) failed with exception: {type(exc)}{exc}')
                 
     def write_concept(self,
                       index: int,
@@ -227,15 +248,17 @@ class ConceptWriter():
                 
                 elements_path = os.path.join(concept_path, 'elements')
                 os.mkdir(elements_path)
-                for element in concept['elements']:
-                    graph = element['metadata']['graph']
-                    self.write_graph(
-                        graph=graph,
-                        index=index,
-                        path=elements_path,
-                        additional_metadata=element['metadata'],
-                    ) 
+                for index, element in enumerate(concept['elements']):
+                    if 'graph' in element['metadata']:
+                        graph = element['metadata']['graph']
+                        self.write_graph(
+                            graph=graph,
+                            index=index,
+                            path=elements_path,
+                            additional_metadata=element['metadata'],
+                        ) 
             
+            concept['elements'] = deepcopy(concept['elements'])
             for data in concept['elements']:
                 # This function removes all the redundant information from the visual graph element dict aka all the 
                 # information that is already contained in the dataset anyways. So that after this function the resulting 
@@ -425,6 +448,7 @@ class ConceptReader():
             # With this folder we can simply use the reader instance to construct our graph instances.
             reader = self.reader_cls(elements_path)
             index_data_map = reader.read()
+            concept['elements'] = list(index_data_map.values())
             graphs = [data['metadata']['graph'] for data in index_data_map.values()]
         
         # The "update_graphs" method will use the loaded model to attach additional information to the graphs
@@ -460,6 +484,7 @@ class ConceptReader():
             graph['node_importances'] = info['node_importance']
             graph['edge_importances'] = info['edge_importance']
             graph['graph_prediction'] = info['graph_output']
+            graph['graph_output'] = info['graph_output']
             graph['graph_embedding'] = info['graph_embedding']
             graph['graph_deviation'] = dev
             

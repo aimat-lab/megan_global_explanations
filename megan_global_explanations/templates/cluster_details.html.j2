@@ -38,8 +38,13 @@
         </div>
 
         <div class="tabular-item">
-            <div class="item-key">Channel Index</div>
+            <div class="item-key">Channel Index:</div>
             <div class="item-value">{{ channel_index["avg"] }} ({{ channel_index["std"] }})</div>
+        </div>
+
+        <div class="tabular-item">
+            <div class="item-key">Contribution:</div>
+            <div class="item-value">{{ '%.2f' % contribution.avg }}</div>
         </div>
 
     </div>
@@ -89,6 +94,12 @@
         {% for example in examples %}
         <div class="example-item">
             <img src="file://{{ example.path }}">
+            {% if 'repr' in example and example.repr | length <= 100 %}
+            <div class="example-info">{{ example.repr }}</div>
+            {% endif %}
+            {% if 'out' in example %}
+            <div class="example-info">pred: {{ example.out }}</div>
+            {% endif %}
         </div>
         {% endfor %}
     </div>

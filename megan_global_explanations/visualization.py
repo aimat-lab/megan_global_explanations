@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib as mpl
 from matplotlib.animation import FuncAnimation
+from scipy.special import softmax
 from scipy.spatial.distance import euclidean
 from weasyprint import HTML, CSS
 from visual_graph_datasets.visualization.base import draw_image
@@ -122,6 +123,7 @@ def concept_umap_visualization(concepts: list[dict],
                                plot_concepts: bool = True,
                                base_figsize: int = 5,
                                alpha: float = 0.3,
+                               marker_size: int = 50,
                                logger: logging.Logger = NULL_LOGGER,
                                ) -> tuple[plt.Figure, list[umap.UMAP]]:
     """
@@ -223,6 +225,7 @@ def concept_umap_visualization(concepts: list[dict],
             color=channel_info['color'],
             alpha=alpha,
             edgecolors='none',
+            s=marker_size,
         )
         ax.set_title(f'UMAP Projection\n'
                      f'Channel {channel_index} - {channel_info["name"]}')
@@ -386,12 +389,18 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
             # just take the single value in the array and if classification we determine the class by argmax.
             predictions: t.List[float] = []
             for graph in graphs:
-                pred = graph['graph_prediction']
+                
+                if 'graph_output' not in graph:
+                    print(f'no graph output in graph of size {len(graph["node_indices"])} of cluster {cluster_index}')
+                    continue
+                    
+                pred = graph['graph_output']
                 if isinstance(pred, np.ndarray):
                     if dataset_type == 'regression':
                         predictions.append(pred[0])
                     else:
                         predictions.append(np.argmax(pred))
+                        
                 # backwards compatibility: If the prediction happens to be just a value then we assume this is already 
                 # processed and we can just take it as it is.
                 else:
@@ -490,9 +499,16 @@ def create_concept_cluster_report(cluster_data_list: t.List[dict],
                 fig.savefig(example_path, bbox_inches='tight')
                 plt.close(fig)
                 
+                out = graph['graph_output']
+                if dataset_type == 'classification':
+                    out = softmax(out)
+                
                 examples.append({
                     'path': example_path,
-                    'title': f'{i}'  
+                    'title': f'{i}',
+                    # optionally we want to also include the graph representation in the visualization.
+                    'repr': str(graph.get('graph_repr', '')),
+                    'out': str(np.round(out, decimals=3)),
                 })
                 
             # ~ prototype visualizations

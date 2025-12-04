@@ -6,7 +6,7 @@
 .. |python-version| image:: https://img.shields.io/badge/Python-3.8.0-green.svg
     :target: https://www.python.org/
 
-.. |version| image:: https://img.shields.io/badge/version-0.2.1-orange.svg
+.. |version| image:: https://img.shields.io/badge/version-0.2.2-orange.svg
     :target: https://www.python.org/
 
 .. image:: overview.png
@@ -18,10 +18,10 @@
 Global Concept-Explanations for the Self-Explaining MEGAN Graph Neural Network
 ==============================================================================
 
-This package implements the functionality needed to extract global concept-based explanations from the recently published 
-MEGAN (`GitHub <https://github.com/aimat-lab/graph_attention_student>`_, `paper <https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18>`_) 
+This package implements the functionality needed to extract global concept-based explanations from the recently published
+MEGAN (`GitHub <https://github.com/aimat-lab/graph_attention_student>`_, `paper <https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18>`_)
 graph neural network model. The MEGAN model itself is a self-explaining graph neural network, which is able to
-provide local attributional explanations its own predictions through an attention mechanism. By extending it's architecture and 
+provide local attributional explanations its own predictions through an attention mechanism. By extending it's architecture and
 training process, it is possible to additionally extract concept-based explanations from it's latent space of explanation embeddings.
 These concept explanations provide a *global* understanding of the model's decision making process.
 
@@ -30,19 +30,19 @@ practices also have the potential to recover valuable scientific insights in
 application domains where little to no prior human intuition exists. To
 that end, we propose a method to create global concept explanations for
 graph prediction tasks with the ultimate objective of gaining a deeper
-understanding of graph predictive tasks, such as chemical property 
+understanding of graph predictive tasks, such as chemical property
 predictions. To achieve this we introduce the updated Megan2 version
 of the recently introduced multi-explanation graph attention network.
 Concept explanations are extracted by identifying dense clusters in the
-model’s latent space of explanations. Finally, we optimize sub-graph 
+model's latent space of explanations. Finally, we optimize sub-graph
 prototypes to represent each concept cluster and optionally query a language
-model to propose potential hypotheses for the underlying causal 
+model to propose potential hypotheses for the underlying causal
 reasoning behind the identified structure-property relationships. We conduct
 computational experiments on synthetic and real-world graph property
-prediction tasks. For the synthetic tasks we find that our method correctly 
+prediction tasks. For the synthetic tasks we find that our method correctly
 reproduces the structural rules by which they were created. For
 real-world molecular property regression and classification tasks, we find
-that our method rediscovers established rules of thumb as well as 
+that our method rediscovers established rules of thumb as well as
 previously published hypotheses from chemistry literature. Additionally, the
 concepts extracted by our method indicate more fine-grained resolution
 of structural details than existing explainability methods. Overall, we
@@ -60,23 +60,38 @@ complex downstream prediction tasks in the future
 ❓ What are Global Concept Explanations?
 ========================================
 
-*Local* explanations aim to provide additional information about individual model predictions. Although there are different forms 
-of local explanations the, the most common modality is that of importance attribution masks. For graph neural networks, these masks 
+*Local* explanations aim to provide additional information about individual model predictions. Although there are different forms
+of local explanations the, the most common modality is that of importance attribution masks. For graph neural networks, these masks
 are defined on the node and edge level and usually provide a 0 to 1 *importance value* of how much a certain node or edge contributed
-to the final prediction. While these explanations are very useful for understanding the model's decision making process on a case by 
+to the final prediction. While these explanations are very useful for understanding the model's decision making process on a case by
 case basis, it is hard to understand the model's general behavior.
 
-*Global* explanations on the other hand aim to provide a more general understanding of the model's overal decision making process. As 
+*Global* explanations on the other hand aim to provide a more general understanding of the model's overal decision making process. As
 with local explanations, there exist different formats in which global model information can be presented, including generative explanations,
 prototype-based explanations and concept-based explanations among others.
 
-*Concept-based* explanations are one specific form of global explanations, which try to explain a models general behavior which is aggregated 
-over many individual instances. The basic idea is to identify certain generalizable *concepts* which are then connected to a certain impact 
-toward the model's prediction outcome. One such concept is generally defined as a common underlying pattern that is shared among multiple instances 
-of the dataset. From a technical perspective, a concept can be defined as a set of input fragments. What exactly these input fragments are differs 
-between application domains. In image processing, for example, these fragments are super pixels or image segments and in langauge processing they 
-can be words or phrases. In the graph processing domain, these input fragments are subgraph motifs which can be contained in multiple different 
+*Concept-based* explanations are one specific form of global explanations, which try to explain a models general behavior which is aggregated
+over many individual instances. The basic idea is to identify certain generalizable *concepts* which are then connected to a certain impact
+toward the model's prediction outcome. One such concept is generally defined as a common underlying pattern that is shared among multiple instances
+of the dataset. From a technical perspective, a concept can be defined as a set of input fragments. What exactly these input fragments are differs
+between application domains. In image processing, for example, these fragments are super pixels or image segments and in langauge processing they
+can be words or phrases. In the graph processing domain, these input fragments are subgraph motifs which can be contained in multiple different
 graphs of the dataset.
+
+===============
+📌 Dependencies
+===============
+
+This package heavily depends on the following two packages. For the subsequent usage description for *this* package, familiarity
+with these two packages is assumed.
+
+- `visual_graph_datasets <https://github.com/aimat-lab/visual_graph_datasets/>`_: This package implements the *visual graph dataset (VGD)* format. This is
+  specific format in which datasets for the training of graph neural networks and subsequent explainability analysis can be stored. The dataset format
+  represents every dataset as a folder and every element as two separate files: A metadata JSON file and a visualization PNG file. The metadata file can
+  be used to load the full pre-processed graph structure in a dictionary format and the visualization can be used to visualize the graph as well as
+  the results of attributional explanation methods.
+- `graph_attention_student <https://github.com/aimat-lab/graph_attention_student/>`_: This package implements the actual MEGAN graph neural network
+  architecture. It exposes tools to train new MEGAN models and to load pre-trained models from memory.
 
 =========================
 📦 Installation by Source
@@ -100,35 +115,113 @@ Afterwards, you can check the install by invoking the CLI:
     python3 -m megan_global_explanations.cli --version
     python3 -m megan_global_explanations.cli --help
 
-===============
-📌 Dependencies
-===============
-
-This package heavily depends on the following two packages. For the subsequent usage description for *this* package, familiarity 
-with these two packages is assumed.
-
-- `visual_graph_datasets <https://github.com/aimat-lab/visual_graph_datasets/>`_: This package implements the *visual graph dataset (VGD)* format. This is
-  specific format in which datasets for the training of graph neural networks and subsequent explainability analysis can be stored. The dataset format 
-  represents every dataset as a folder and every element as two separate files: A metadata JSON file and a visualization PNG file. The metadata file can 
-  be used to load the full pre-processed graph structure in a dictionary format and the visualization can be used to visualize the graph as well as 
-  the results of attributional explanation methods.
-- `graph_attention_student <https://github.com/aimat-lab/graph_attention_student/>`_: This package implements the actual MEGAN graph neural network 
-  architecture. It exposes tools to train new MEGAN models and to load pre-trained models from memory.
-
 =============
 🚀 Quickstart
 =============
 
-To create global concept explanations for a specific graph prediction tasks, it is assumed that the dataset in question already exists in the 
-*visual graph dataset (VGD)* format and that an already pre-trained MEGAN model is available. The following steps illustrate the process of loading 
-the dataset and the model and then extracting the concept explanations.
+The fastest way to extract concept explanations is using the built-in experiment scripts.
+
+**Prerequisites:** You need a pre-trained MEGAN model checkpoint and either a CSV dataset or a Visual Graph Dataset.
+
+CSV-Based Concept Extraction
+----------------------------
+
+For custom datasets in CSV format (recommended for new projects):
+
+.. code-block:: bash
+
+    python megan_global_explanations/experiments/concept_extraction.py \
+        --CSV_PATH='"/path/to/data.csv"' \
+        --VALUE_COLUMN_NAME='"smiles"' \
+        --TARGET_COLUMN_NAMES='["target"]' \
+        --MODEL_PATH='"/path/to/model.ckpt"' \
+        --DATASET_TYPE='"regression"'
+
+Your CSV should have a SMILES column and target column(s):
+
+.. code-block:: text
+
+    smiles,target
+    CCO,-0.77
+    CCN,0.21
+    c1ccccc1,-2.18
+
+Key parameters:
+
+- ``CSV_PATH``: Path to your CSV file
+- ``VALUE_COLUMN_NAME``: Column containing SMILES strings (default: ``smiles``)
+- ``TARGET_COLUMN_NAMES``: List of target value columns
+- ``MODEL_PATH``: Path to trained MEGAN model checkpoint
+- ``DATASET_TYPE``: Either ``regression`` or ``classification``
+- ``PROCESSING_PATH``: Optional path to a custom processing module (defaults to ``MoleculeProcessing``)
+
+VGD-Based Concept Extraction
+----------------------------
+
+For pre-processed Visual Graph Datasets:
+
+.. code-block:: bash
+
+    # Use a specific dataset implementation
+    python megan_global_explanations/experiments/vgd_concept_extraction__aqsoldb.py
+
+    # Or with custom parameters
+    python megan_global_explanations/experiments/vgd_concept_extraction.py \
+        --VISUAL_GRAPH_DATASET='"aqsoldb"' \
+        --MODEL_PATH='"/path/to/model.ckpt"' \
+        --DATASET_TYPE='"regression"'
+
+Output
+------
+
+Both approaches generate the following artifacts in the experiment results folder:
+
+- ``concept_report.pdf``: Visual report of all discovered concepts with statistics and examples
+- ``concepts/``: Persistent storage of concept data for later analysis
+- ``cluster_centroids.json``: Cluster centroid locations and density metrics
+- ``graphs.json``: Processed graph data with model embeddings
+
+===============
+📄 Config Files
+===============
+
+Instead of passing parameters on the command line, you can create a YAML config file:
+
+.. code-block:: yaml
+
+    # my_config.yml
+    extend: concept_extraction.py
+    parameters:
+      CSV_PATH: /path/to/data.csv
+      VALUE_COLUMN_NAME: smiles
+      TARGET_COLUMN_NAMES:
+        - target
+      MODEL_PATH: /path/to/model.ckpt
+      PROCESSING_PATH: /path/to/process.py
+      DATASET_TYPE: regression
+      MIN_CLUSTER_SIZE: 15
+      MIN_SAMPLES: 5
+      FIDELITY_THRESHOLD: 0.5
+      OPTIMIZE_CLUSTER_PROTOTYPE: false
+
+Then run the experiment with:
+
+.. code-block:: bash
+
+    pycomex run megan_global_explanations/experiments/my_config.yml
+
+=============
+🤖 Python API
+=============
+
+For custom workflows, you can use the Python API directly:
 
 .. code-block:: python
 
     """
-    This example script will load a visual graph dataset and a pre-trained model and then 
-    extract the concept explanations by finding dense clusters in the model's latent space 
-    of subgraph explanations. The resulting concept clustering report PDF will be saved 
+    This example script will load a visual graph dataset and a pre-trained model and then
+    extract the concept explanations by finding dense clusters in the model's latent space
+    of subgraph explanations. The resulting concept clustering report PDF will be saved
     in the current working directory.
     """
     import os
@@ -156,25 +249,25 @@ the dataset and the model and then extracting the concept explanations.
 
     # ~ required parameters
 
-    # The "ensure_dataset" method will try to download a dataset from the remote file 
-    # share server if it is not already present. If the dataset is already present, 
-    # the local version will be used. In any case, the function will return the absolute 
-    # string path to the dataset folder. 
+    # The "ensure_dataset" method will try to download a dataset from the remote file
+    # share server if it is not already present. If the dataset is already present,
+    # the local version will be used. In any case, the function will return the absolute
+    # string path to the dataset folder.
     DATASET_PATH: str = ensure_dataset('rb_dual_motifs', Config().load())
-    # Knowing the exact type of task (regression or classification) is important for 
+    # Knowing the exact type of task (regression or classification) is important for
     # various operations during the concept clustering and report generation!
     DATASET_TYPE: t.Literal['regression', 'classification'] = 'regression'
-    # We also need to load an existing model, from whose latent space the concept 
+    # We also need to load an existing model, from whose latent space the concept
     # explanations will be extracted.
     MODEL_PATH: str = os.path.join(
-        EXPERIMENTS_PATH, 
-        'assets', 
-        'models', 
+        EXPERIMENTS_PATH,
+        'assets',
+        'models',
         'rb_dual_motifs.ckpt'
     )
-    # This is a dictionary that provides additional information about the channels that 
+    # This is a dictionary that provides additional information about the channels that
     # the model uses.
-    # However, this dict is optional and does not necessarily have to be provided for the 
+    # However, this dict is optional and does not necessarily have to be provided for the
     # concept clustering to work.
     CHANNEL_INFOS: t.Dict[int, dict] = {
         0: {'name': 'negative', 'color': 'skyblue'},
@@ -182,9 +275,9 @@ the dataset and the model and then extracting the concept explanations.
     }
 
     # ~ loading the dataset
-    # The dataset is assumed to be in the special "visual graph dataset (VGD)" format. 
-    # The special "VisualGraphDatasetReader" class will be used to load the dataset. 
-    # The "read" method will return a dictionary with the dataset elements and their 
+    # The dataset is assumed to be in the special "visual graph dataset (VGD)" format.
+    # The special "VisualGraphDatasetReader" class will be used to load the dataset.
+    # The "read" method will return a dictionary with the dataset elements and their
     # indices as keys.
     reader = VisualGraphDatasetReader(path=DATASET_PATH)
     index_data_map: t.Dict[int, dict] = reader.read()
@@ -192,21 +285,21 @@ the dataset and the model and then extracting the concept explanations.
     log.info(f'loaded dataset with {len(index_data_map)} elements.')
 
     # ~ loading the model
-    # The model is assumed to be a MEGAN model. Therefore the "Megan" class will be 
-    # used to load the model from the given checkpoint file. The "load_from_checkpoint" 
+    # The model is assumed to be a MEGAN model. Therefore the "Megan" class will be
+    # used to load the model from the given checkpoint file. The "load_from_checkpoint"
     # method will return the model instance.
     model = Megan.load_from_checkpoint(MODEL_PATH)
     log.info(f'loaded model {model.__class__.__name__} with {model.num_channels} channels.')
 
     # ~ extracting the concept explanations
-    # The extract_concepts method will extract the concept explanations by finding 
+    # The extract_concepts method will extract the concept explanations by finding
     # dense clusters in the the latent space of the model.
     concepts: t.List[dict] = extract_concepts(
         model=model,
         index_data_map=index_data_map,
         processing=processing,
-        # parameters for the HDBSCAN clustering algorithm. The smaller the "min_samples" 
-        # parameter the more concept clusters will be found. However, this will also lead 
+        # parameters for the HDBSCAN clustering algorithm. The smaller the "min_samples"
+        # parameter the more concept clusters will be found. However, this will also lead
         # to more redundancy - there might be multiple clusters for the same true motif.
         min_samples=60,
         min_cluster_size=10,
@@ -219,8 +312,8 @@ the dataset and the model and then extracting the concept explanations.
     log.info(f'extracted {len(concepts)} concepts.')
 
     # ~ creating the report
-    # The "create_concept_report" method will create a report PDF which visualizes 
-    # all the information from the concept clustering. For every concept several pages 
+    # The "create_concept_report" method will create a report PDF which visualizes
+    # all the information from the concept clustering. For every concept several pages
     # with statistics, examples and descriptions will be created.
 
     log.info(f'creating the concept clustering report...')
@@ -243,37 +336,48 @@ are defined as independent python modules in the ``experiments`` folder.
 
 The following list provides an overview and description of the most important experiments:
 
-- ``vgd_concept_extraction.py``: The base implementation for the concept clustering process based on a visual graph dataset 
-  and a pre-trained ``Megan`` model. Depending on the parameter configuration, this experiment will perform the HDBSCAN based 
+**CSV-Based Experiments** (no VGD required):
+
+- ``concept_extraction.py``: The base implementation for CSV-based concept extraction. Loads data directly from a CSV file
+  and processes graphs on-the-fly using a configurable Processing instance.
+- ``concept_extraction__aqsoldb.py``: CSV-based implementation for the AqSolDB water solubility dataset with molecular-specific
+  prototype optimization and GPT-4 hypothesis generation.
+
+**VGD-Based Experiments** (requires Visual Graph Dataset):
+
+- ``vgd_concept_extraction.py``: The base implementation for the concept clustering process based on a visual graph dataset
+  and a pre-trained ``Megan`` model. Depending on the parameter configuration, this experiment will perform the HDBSCAN based
   clustering, the optimization of the prototypes and the query to the GPT4 API to obtain a concept hypothesis.
-- ``vgd_concept_extraction__ba2motifs.py``: The specific implementation of the concept extraction for the synthetic graph classification 
+- ``vgd_concept_extraction__ba2motifs.py``: The specific implementation of the concept extraction for the synthetic graph classification
   dataset BA2Motifs.
-- ``vgd_concept_extraction__rb_dual_motifs.py``: The specific implementation of the concept extraction for the RbDualMotifs 
-  synthetic graph regression dataset. 
-- ``vgd_concept_extraction__aqsoldb.py``: The specific implementation for the AqSolDB dataset. This dataset is about the regression 
+- ``vgd_concept_extraction__rb_dual_motifs.py``: The specific implementation of the concept extraction for the RbDualMotifs
+  synthetic graph regression dataset.
+- ``vgd_concept_extraction__aqsoldb.py``: The specific implementation for the AqSolDB dataset. This dataset is about the regression
   of the experimentally determined logS water solubility values of molecular graphs.
-- ``vgd_concept_extraction__mutagenicity.py``: The specific implementation for the Mutagenicity dataset. This dataset is about the 
+- ``vgd_concept_extraction__mutagenicity.py``: The specific implementation for the Mutagenicity dataset. This dataset is about the
   the binary classification of whether a given molecular graph is mutagenic (causes mutations in the DNA of living organisms) or not.
 
-- ``explain_element.py``: This experiment loads a given visual graph dataset, a pre-trained MEGAN model and the persistently stored 
-  information about a concept clustering to create the local explanation for a specific element. The model is queried with the given 
-  graph element as an input. The model outputs the primary target value prediction as well as the local explanation masks. Additionally, 
+**Explanation Experiments**:
+
+- ``explain_element.py``: This experiment loads a given visual graph dataset, a pre-trained MEGAN model and the persistently stored
+  information about a concept clustering to create the local explanation for a specific element. The model is queried with the given
+  graph element as an input. The model outputs the primary target value prediction as well as the local explanation masks. Additionally,
   the graph embeddings created by the model are used to create
-- ``explain_element__aqsoldb.py``: Uses a pre-trained model and existing concept clustering to generate explanations about water solubility 
+- ``explain_element__aqsoldb.py``: Uses a pre-trained model and existing concept clustering to generate explanations about water solubility
   for a single molecular graph in SMILES representation.
 
 ==========================
 📎 Supplementary Materials
 ==========================
 
-The repository contains the ``supplementary`` folder which includes the supplementary materials for the `paper <arxiv>`_. This folder 
+The repository contains the ``supplementary`` folder which includes the supplementary materials for the `paper <arxiv>`_. This folder
 contains the following elements:
 
-- ``cluster_report_rb_dual_motifs.pdf``: The automatically generated concept clustering report PDF for the RbDualMotifs dataset that is 
+- ``cluster_report_rb_dual_motifs.pdf``: The automatically generated concept clustering report PDF for the RbDualMotifs dataset that is
   referenced in the paper.
-- ``cluster_report_mutagenicity.pdf``: The automatically generated concept clustering report PDF for the Mutagenicity dataset that is 
+- ``cluster_report_mutagenicity.pdf``: The automatically generated concept clustering report PDF for the Mutagenicity dataset that is
   referenced in the paper.
-- ``cluster_report_aqsoldb.pdf``: The automatically generated concept clustering report PDF for the AqSolDB dataset that is referenced 
+- ``cluster_report_aqsoldb.pdf``: The automatically generated concept clustering report PDF for the AqSolDB dataset that is referenced
   in the paper.
 
 ==============
@@ -300,4 +404,4 @@ Credits
   with these experiments.
 
 .. _PyComex: https://github.com/the16thpythonist/pycomex.git
-.. _MEGAN: https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18 
+.. _MEGAN: https://link.springer.com/chapter/10.1007/978-3-031-44067-0_18

@@ -160,6 +160,8 @@ class TestConceptReader:
             
             for concept in concepts:
                 assert len(concept['elements']) != 0
+                assert isinstance(concept['elements'], list)
+                assert 'image_path' in concept['elements'][0]
 
 class TestConceptWriter:
     

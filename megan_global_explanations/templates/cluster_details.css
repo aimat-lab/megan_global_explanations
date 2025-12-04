@@ -83,6 +83,18 @@ div.example-item {
     width: 25%;
 }
 
+div.example-info {
+    width: 100%;
+    max-width: 100%;
+    font-size: 0.5em;
+    text-align: center;
+    color: gray;
+    padding-left: 2px;
+    padding-right: 2px;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
 img {
     max-width: 100%;
     width: 100%;

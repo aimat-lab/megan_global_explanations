@@ -66,6 +66,7 @@ def load_mock_clusters(num_clusters: int = 3,
             graph['edge_importances'] = np.random.random(size=(len(graph['edge_indices']), num_channels))
             graph['graph_deviation'] = np.random.random(size=(1, num_channels))
             graph['graph_prediction'] = np.random.random()
+            graph['graph_output'] = np.random.random()
             
             graph['graph_repr'] = data['metadata']['repr'] if 'repr' in data['metadata'] else data['metadata']['value']
             

@@ -1,6 +1,8 @@
 """
-Extends the base experiment "vgd_concept_extraction". This experiment implements the concept extraction 
+Extends the base experiment "concept_extraction". This experiment implements the concept extraction
 specifically for the aqsoldb dataset for the regression of logS water solubility values.
+
+Unlike the VGD-based version, this experiment loads data directly from a CSV file.
 """
 import os
 import pathlib
@@ -16,7 +18,6 @@ from scipy.spatial.distance import cosine
 from pycomex.functional.experiment import Experiment
 from pycomex.utils import file_namespace, folder_path
 from visual_graph_datasets.processing.base import ProcessingBase
-from visual_graph_datasets.processing.molecules import MoleculeProcessing
 from visual_graph_datasets.graph import copy_graph_dict
 from graph_attention_student.torch.megan import Megan
 from megan_global_explanations.gpt import query_gpt
@@ -31,24 +32,47 @@ from megan_global_explanations.utils import EXPERIMENTS_PATH
 PATH = pathlib.Path(__file__).parent.absolute()
 ASSETS_PATH = os.path.join(EXPERIMENTS_PATH, 'assets')
 
-# == DATASET PARAMETERS ==
-# The parameters determine the details related to the dataset that should be used as the basis 
+# == CSV PARAMETERS ==
+# The parameters determine the details related to the CSV file that should be used as the basis
 # of the concept extraction
 
-# :param VISUAL_GRAPH_DATASETS:
-#       This determines the visual graph dataset to be loaded for the concept clustering. This may either 
-#       be an absolute string path to a visual graph dataset folder on the local system. Otherwise this 
-#       may also be a valid string identifier for a vgd in which case it will be downloaded from the remote 
-#       file share instead.
-VISUAL_GRAPH_DATASET: str = 'aqsoldb'
+# :param CSV_PATH:
+#       The absolute path to the CSV file containing the aqsoldb data. The CSV file should have
+#       columns for SMILES strings and solubility values.
+CSV_PATH: str = '/media/data/Downloads/aqsoldb_.csv'
+# :param VALUE_COLUMN_NAME:
+#       The name of the column in the CSV file that contains the SMILES strings.
+VALUE_COLUMN_NAME: str = 'SMILES'
+# :param TARGET_COLUMN_NAMES:
+#       A list of column names that contain the target values (water solubility logS values).
+TARGET_COLUMN_NAMES: t.List[str] = ['Solubility']
+# :param INDEX_COLUMN_NAME:
+#       Optional. The name of the column containing unique integer indices for each element.
+#       If None, indices will be assigned sequentially starting from 0.
+INDEX_COLUMN_NAME: t.Optional[str] = None
+
+# == PROCESSING PARAMETERS ==
+# The parameters determine how graph representations are computed from SMILES strings.
+
+# :param PROCESSING_PATH:
+#       Optional. The absolute path to a process.py module. If None, a default MoleculeProcessing
+#       instance will be used, which is appropriate for the aqsoldb molecular dataset.
+PROCESSING_PATH: t.Optional[str] = None
+PROCESSING_PATH = '/media/ssd2/Programming/graph_attention_student/graph_attention_student/experiments/results/train_model__megan__aqsoldb/debug/process.py'
+
+
+# == DATASET PARAMETERS ==
+# The parameters determine the details related to the dataset that should be used as the basis
+# of the concept extraction
+
 # :param DATASET_TYPE:
-#       This has the specify the dataset type of the given dataset. This may either be "regression" or 
-#       "classification"
+#       This has the specify the dataset type of the given dataset. For aqsoldb, this is "regression"
+#       since we are predicting continuous water solubility values.
 DATASET_TYPE: str = 'regression'
 # :param CHANNEL_INFOS:
-#       This dictionary can optionally be given to supply additional information about the individual 
-#       explanation channels. The key should be the index of the channel and the value should again be 
-#       a dictionary that contains the information for the corresponding channel.
+#       This dictionary can optionally be given to supply additional information about the individual
+#       explanation channels. For regression with 2 channels, channel 0 typically represents negative
+#       contributions (decreasing solubility) and channel 1 represents positive contributions.
 CHANNEL_INFOS: t.Dict[int, dict] = {
     0: {
         'name': 'negative',
@@ -60,39 +84,38 @@ CHANNEL_INFOS: t.Dict[int, dict] = {
     }
 }
 
-# == MODEL PARAMETERS == 
-# These parameters determine the details related to the model that should be used for the 
-# concept extraction. For this experiment, the model should already be trained and only 
+# == MODEL PARAMETERS ==
+# These parameters determine the details related to the model that should be used for the
+# concept extraction. For this experiment, the model should already be trained and only
 # require to be loaded from the disk
 
 # :param MODEL_PATH:
-#       This has to be the absolute string path to the model checkpoint file which contains the 
+#       This has to be the absolute string path to the model checkpoint file which contains the
 #       specific MEGAN model that is to be used for the concept clustering.
 MODEL_PATH: str = os.path.join(ASSETS_PATH, 'models', 'aqsoldb.ckpt')
-MODEL_PATH: str = '/media/ssd2/Programming/graph_attention_student/graph_attention_student/experiments/results/train_model__megan__aqsoldb/debug/model.ckpt'
-
+MODEL_PATH = '/media/ssd2/Programming/graph_attention_student/graph_attention_student/experiments/results/train_model__megan__aqsoldb/debug/model.ckpt'
 
 # == CLUSTERING PARAMETERS ==
 # This section determines the parameters of the concept clustering algorithm itself.
 
 # :param FIDELITY_THRESHOLD:
-#       This float value determines the treshold for the channel fidelity. Only elements with a 
+#       This float value determines the treshold for the channel fidelity. Only elements with a
 #       fidelity higher than this will be used as possible candidates for the clustering.
 FIDELITY_THRESHOLD: float = 0.5
 # :param MIN_CLUSTER_SIZE:
-#       This parameter determines the min cluster size for the HDBSCAN algorithm. Essentially 
+#       This parameter determines the min cluster size for the HDBSCAN algorithm. Essentially
 #       a cluster will only be recognized as a cluster if it contains at least that many elements.
 MIN_CLUSTER_SIZE: int = 15
 # :param MIN_SAMPLES:
-#       This cluster defines the HDBSCAN behavior. Essentially it determines how conservative the 
-#       clustering is. Roughly speaking, a larger value here will lead to less clusters while 
+#       This cluster defines the HDBSCAN behavior. Essentially it determines how conservative the
+#       clustering is. Roughly speaking, a larger value here will lead to less clusters while
 #       lower values tend to result in more clusters.
 MIN_SAMPLES: int = 5
 # :param SORT_SIMILARITY:
 #       This boolean flag determines whether the clusters should be sorted by their similarity.
-#       If this is True, the clusters will be sorted by their similarity which means that the order 
-#       of the clusters will be determined by the similarity with each other. Having this enables makes 
-#       the concept report a bit more readable because similar clusters will appear close to each other 
+#       If this is True, the clusters will be sorted by their similarity which means that the order
+#       of the clusters will be determined by the similarity with each other. Having this enables makes
+#       the concept report a bit more readable because similar clusters will appear close to each other
 #       in the report PDF.
 SORT_SIMILARITY: bool = True
 
@@ -100,12 +123,12 @@ SORT_SIMILARITY: bool = True
 # These parameters configure the process of optimizing the cluster prototype representatation
 
 # :param OPTIMIZE_CLUSTER_PROTOTYPE:
-#       This boolean flag determines whether the prototype optimization should be executed at 
-#       all or not. If this is False, the entire optimization routine will be skipped during the 
+#       This boolean flag determines whether the prototype optimization should be executed at
+#       all or not. If this is False, the entire optimization routine will be skipped during the
 #       cluster discovery.
 OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
 # :param INITIAL_POPULATION_SAMPLE:
-#       This integer number determines the number of initial samples that are drawn from the cluster 
+#       This integer number determines the number of initial samples that are drawn from the cluster
 #       members as the initial population of the prototype optimization GA procedure.
 INITIAL_POPULATION_SAMPLE: int = 200
 # :param OPTIMIZE_PROTOTYPE_POPSIZE:
@@ -120,6 +143,10 @@ OPTIMIZE_PROTOTYPE_EPOCHS: int = 50
 #       This string value has to be the OpenAI API key that should be used for the GPT-4 requests
 #       that will be needed to generate the natural language descriptions of the prototypes.
 OPENAI_KEY: str = os.getenv('OPENAI_KEY')
+# :param DESCRIBE_PROTOTYPE:
+#       This boolean flag determines whether the prototype description should be generated at all
+#       or not. If this is False, the entire description routine will be skipped during the
+#       cluster discovery.
 DESCRIBE_PROTOTYPE: bool = False
 # :param HYPOTHESIZE_PROTOTYPE:
 #       This boolean flag determines whether the prototype hypothesis should be generated at all
@@ -127,22 +154,21 @@ DESCRIBE_PROTOTYPE: bool = False
 #       cluster discovery.
 HYPOTHESIZE_PROTOTYPE: bool = False
 # :param CONTRIBUTION_THRESHOLDS:
-#       This dictionary determines the thresholds to be used when converting the contribution values 
-#       of classification tasks into the strings such that they can be passed to the language model 
-#       for the hypothesis generation. The keys are the contribution values and the values are the 
-#       strings that will be used to describe the impact of these contributions in words.
-#       Note that this will only be used for classification problems since for classification problems 
-#       the contribution values are measured in classification logits which do not have a direct meaning 
-#       to the language model. In contrast, regression contributions are measured directly in the 
-#       target space and therefore do not need to be converted.
+#       This dictionary determines the thresholds to be used when converting the contribution values
+#       of classification tasks into the strings such that they can be passed to the language model
+#       for the hypothesis generation.
+CONTRIBUTION_THRESHOLDS: dict = {
+    10: 'small',
+    20: 'high'
+}
 
 # == VISUALIZATION PARAMETERS ==
-# These parameters determine the details of the visualizations that will be created as part of the 
+# These parameters determine the details of the visualizations that will be created as part of the
 # artifacts of this experiment.
 
 # :param PLOT_UMAP:
 #       This boolean flag determines whether the UMAP visualization of the graph embeddings should be
-#       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
+#       created or not. If this is True, the UMAP visualization will be created and saved as an additional
 #       artifact of the experiment.
 PLOT_UMAP: bool = True
 
@@ -150,11 +176,12 @@ PLOT_UMAP: bool = True
 __DEBUG__ = True
 
 experiment = Experiment.extend(
-    'vgd_concept_extraction.py',
+    'concept_extraction.py',
     base_path=folder_path(__file__),
     namespace=file_namespace(__file__),
     glob=globals()
 )
+
 
 @experiment.hook('optimize_prototype', default=False, replace=True)
 def optimize_prototype(e: Experiment,
@@ -165,43 +192,54 @@ def optimize_prototype(e: Experiment,
                        cluster_embeddings: np.ndarray,
                        **kwargs,
                        ) -> dict:
-    
-    # For the embedding objective function we need some kind of anchor location to which we want to 
+    """
+    Optimize a prototype graph for the cluster using genetic algorithm.
+
+    Uses the cluster centroid as the target embedding and optimizes molecular
+    structures to minimize the distance to this centroid.
+    """
+    # For the embedding objective function we need some kind of anchor location to which we want to
     # minimize the distance. For this we are simply going to use the cluster centroid.
     anchor = np.mean(cluster_embeddings, axis=0)
-    
-    # In this section we assemble the initial population for the optimization of the prototype. In fact, 
-    # in this use case, it is possible to already assemble a very good initial population by simply using 
-    # the subgraphs which are already highlighted by the explanation masks of the cluster members. These 
-    # should by themselves already be very close to the ideal cluster prototype and most likely only 
+
+    # In this section we assemble the initial population for the optimization of the prototype. In fact,
+    # in this use case, it is possible to already assemble a very good initial population by simply using
+    # the subgraphs which are already highlighted by the explanation masks of the cluster members. These
+    # should by themselves already be very close to the ideal cluster prototype and most likely only
     # need minor refinements through the GA optimization.
     num_initial = min(e.INITIAL_POPULATION_SAMPLE, len(cluster_embeddings))
-    
+
     anchor_distances = np.array([cosine(anchor, emb) for emb in cluster_embeddings])
     indices = np.argsort(anchor_distances).tolist()[:num_initial]
-    
+
     violation_radius = np.percentile(anchor_distances, 90)
     print('MIN', anchor_distances[indices][:3], 'MEAN', np.mean(anchor_distances), 'MAX', np.max(anchor_distances), 'VIOL', violation_radius)
-    
+
     elements_initial = []
     for index in indices:
         graph = copy_graph_dict(cluster_graphs[index])
-        smiles = graph['graph_repr'].item()
+        smiles = graph['graph_repr']
+
+        # Handle both string and numpy array representations
+        if hasattr(smiles, 'item'):
+            smiles = smiles.item()
 
         mol = Chem.MolFromSmiles(smiles)
         smiles = Chem.MolToSmiles(mol, kekuleSmiles=True, isomericSmiles=False)
-        
-        # We actually HAVE TO clear those here or else it will fail. This is because the molecular mutation operations 
-        # do not preserve the additional graph attributes and it will cause issues to pass graphs through the model 
+
+        # We actually HAVE TO clear those here or else it will fail. This is because the molecular mutation operations
+        # do not preserve the additional graph attributes and it will cause issues to pass graphs through the model
         # where some of them have this attribute and some of them dont.
-        del graph['node_importances']
-        del graph['edge_importances']
+        if 'node_importances' in graph:
+            del graph['node_importances']
+        if 'edge_importances' in graph:
+            del graph['edge_importances']
 
         elements_initial.append({
             'graph': graph,
             'value': smiles,
         })
-    
+
     # This function will execute the actual genetic optimization algorithm to create graph prototypes
     # that are as close to the cluster centroid (==anchor) as possible.
     element, history = genetic_optimize(
@@ -212,14 +250,6 @@ def optimize_prototype(e: Experiment,
             anchors=[anchor],
             violation_radius=0.2,
         ),
-        # fitness_func=lambda graphs: graph_matching_embedding_fitness(
-        #     graphs=graphs,
-        #     model=model,
-        #     channel_index=channel_index,
-        #     anchor_graphs=anchor_graphs,
-        #     processing=processing, 
-        #     check_edges=True,
-        # ),
         sample_func=lambda: deepcopy(random.choice(elements_initial)),
         mutation_funcs=[
             lambda element: mutate_remove_bond(element, processing=processing),
@@ -233,7 +263,7 @@ def optimize_prototype(e: Experiment,
         elite_ratio=0.01,
         refresh_ratio=0.1,
     )
-    
+
     return element
 
 
@@ -242,7 +272,9 @@ def describe_prototype(e: Experiment,
                        value: str,
                        image_path: str,
                        ) -> str:
-    
+    """
+    Generate a natural language description of the molecular prototype using GPT-4.
+    """
     print(value)
     e.log(' * generating description for the molecular prototype...')
     description, _ = describe_molecule(
@@ -252,7 +284,7 @@ def describe_prototype(e: Experiment,
         max_tokens=200,
     )
     print(description)
-    
+
     return description
 
 
@@ -264,9 +296,11 @@ def prototype_hypothesis(e: Experiment,
                          contribution: float,
                          **kwargs,
                          ) -> t.Optional[str]:
-    
-    e.log(' * generating mutagenicity prototype hypothesis with GPT...')
-    
+    """
+    Generate a hypothesis about the structure-property relationship for water solubility.
+    """
+    e.log(' * generating water solubility prototype hypothesis with GPT...')
+
     system_message = (
         f'You are a chemistry expert that is tasked to come up with possible hypotheses about the underlying '
         f'structure-property relationships of molecular properties.\n\n'
@@ -281,23 +315,23 @@ def prototype_hypothesis(e: Experiment,
         '- you do not use enumerations\n'
         '- you language is accurate and concise\n'
     )
-    
+
     if e.DATASET_TYPE == 'regression':
         impact: str = f'{contribution:.2f}'
         name = 'Water Solubility'
-        
+
     elif e.DATASET_TYPE == 'classification':
         name: str = e.CHANNEL_INFOS[channel_index]["name"]
         impact: str = ''
         for threshold, description in e.CONTRIBUTION_THRESHOLDS.items():
             if contribution > threshold:
                 impact = description.upper()
-    
+
     user_message = (
         f'The structure given by the SMILES representation "{value}" has been linked to {impact} influence '
         f'towards "{name}"'
     )
-    
+
     try:
         description, messages = query_gpt(
             api_key=e.OPENAI_KEY,
@@ -310,5 +344,6 @@ def prototype_hypothesis(e: Experiment,
         print(exc)
         traceback.print_exc()
         return None
+
 
 experiment.run_if_main()

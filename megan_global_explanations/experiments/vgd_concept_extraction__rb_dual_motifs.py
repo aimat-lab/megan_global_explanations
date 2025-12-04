@@ -60,7 +60,8 @@ SUBSET: t.Optional[int] = None
 # :param MODEL_PATH:
 #       This has to be the absolute string path to the model checkpoint file which contains the 
 #       specific MEGAN model that is to be used for the concept clustering.
-MODEL_PATH: str = os.path.join(EXPERIMENTS_PATH, 'assets', 'models', 'rb_dual_motifs.ckpt')
+#MODEL_PATH: str = os.path.join(EXPERIMENTS_PATH, 'assets', 'models', 'rb_dual_motifs.ckpt')
+MODEL_PATH: str = '/media/ssd/Programming/graph_attention_student/graph_attention_student/experiments/results/vgd_torch__megan__rb_dual_motifs/debug/model.ckpt'
 
 # == CLUSTERING PARAMETERS ==
 # This section determines the parameters of the concept clustering algorithm itself.
@@ -72,12 +73,12 @@ FIDELITY_THRESHOLD: float = 0.5
 # :param MIN_CLUSTER_SIZE:
 #       This parameter determines the min cluster size for the HDBSCAN algorithm. Essentially 
 #       a cluster will only be recognized as a cluster if it contains at least that many elements.
-MIN_CLUSTER_SIZE: int = 20
+MIN_CLUSTER_SIZE: int = 10
 # :param MIN_SAMPLES:
 #       This cluster defines the HDBSCAN behavior. Essentially it determines how conservative the 
 #       clustering is. Roughly speaking, a larger value here will lead to less clusters while 
 #       lower values tend to result in more clusters.
-MIN_SAMPLES: int = 50
+MIN_SAMPLES: int = 20
 
 # == PROTOTYPE OPTIMIZATION PARAMETERS ==
 # These parameters configure the process of optimizing the cluster prototype representatation
@@ -86,7 +87,7 @@ MIN_SAMPLES: int = 50
 #       This boolean flag determines whether the prototype optimization should be executed at 
 #       all or not. If this is False, the entire optimization routine will be skipped during the 
 #       cluster discovery.
-OPTIMIZE_CLUSTER_PROTOTYPE: bool = True
+OPTIMIZE_CLUSTER_PROTOTYPE: bool = False
 # :param INITIAL_POPULATION_SAMPLE:
 #       This integer number determines the number of initial samples that are drawn from the cluster 
 #       members as the initial population of the prototype optimization GA procedure.
