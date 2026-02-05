@@ -834,10 +834,31 @@ def experiment(e: Experiment):
         distance_func=cosine,
         normalize_centroid=True,
     )
-    
-    
-    
-    
+
+    # :hook post_clustering:
+    #       This hook is called at the very end of the experiment after all clustering, prototype optimization,
+    #       and report generation is complete. It receives all the relevant data structures and can be used
+    #       to perform additional custom processing or export tasks.
+    e.apply_hook(
+        'post_clustering',
+        cluster_infos=cluster_infos,
+        graphs=graphs,
+        indices=indices,
+        model=model,
+        processing=processing,
+        index_data_map=index_data_map,
+    )
+
+
+@experiment.hook('post_clustering', default=False, replace=False)
+def post_clustering(e: Experiment, **kwargs) -> None:
+    """
+    Default implementation of post_clustering hook - does nothing.
+    Override in sub-experiments to add custom post-processing.
+    """
+    pass
+
+
 @experiment.analysis
 def analysis(e: Experiment):
     

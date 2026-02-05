@@ -42,6 +42,7 @@ visual-graph-datasets = ">=0.15.1"
 umap-learn = ">=0.5.3"
 hdbscan = ">=0.8.0"
 weasyprint = ">=61.1"
+scikit-learn = "==1.7.2"
 
 [tool.poetry.dev-dependencies]
 pytest = ">=7.1.3"
