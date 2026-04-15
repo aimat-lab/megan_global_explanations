@@ -12,6 +12,7 @@ the concept explanations.
 """
 import os
 import json
+import pickle
 import random
 import pathlib
 import traceback
@@ -122,6 +123,17 @@ MIN_SAMPLES: int = 5
 #       algorithm. The default value is 'leaf' which is the most conservative method. Other possible
 #       values are 'eom' and 'leaf'.
 CLUSTER_SELECTION_METHOD: str = 'leaf'
+# :param CLUSTERING_METRIC:
+#       This string value determines the distance metric that is used for the HDBSCAN clustering,
+#       the centroid distance calculations, and the UMAP visualization. Common options include
+#       'manhattan', 'euclidean', and 'cosine'.
+CLUSTERING_METRIC: str = 'manhattan'
+# :param CLUSTER_REPRESENTATIVE:
+#       This string value determines how the representative point for each cluster is calculated.
+#       'centroid' computes the mean of all cluster embeddings. 'medoid' selects the actual
+#       cluster member whose total distance to all other members is minimal. The medoid is more
+#       robust to outliers and is always a real data point, but is more expensive to compute.
+CLUSTER_REPRESENTATIVE: str = 'centroid'
 # :param SORT_SIMILARITY:
 #       This boolean flag determines whether the clusters should be sorted by their similarity.
 #       If this is True, the clusters will be sorted by their similarity which means that the order 
@@ -187,6 +199,10 @@ CONTRIBUTION_THRESHOLDS: dict = {
 #       created or not. If this is True, the UMAP visualization will be created and saved as an additional 
 #       artifact of the experiment.
 PLOT_UMAP: bool = False
+# :param NUM_SAMPLE_ELEMENTS:
+#       The number of random dataset elements to sample for the sample-to-cluster distance heatmap.
+#       Set to 0 to skip this visualization.
+NUM_SAMPLE_ELEMENTS: int = 25
 
 __DEBUG__ = True
 
@@ -447,6 +463,8 @@ def experiment(e: Experiment):
     # Now we calculate the concept clusters separately for each of the explanation channels of the model.
     e.log('starting concept clustering...')
     cluster_infos: t.List[dict] = []
+    channel_clusterers: t.Dict[int, object] = {}
+    channel_labels: t.Dict[int, np.ndarray] = {}
     cluster_index = 0
     for channel_index in range(num_channels):
         
@@ -468,19 +486,36 @@ def experiment(e: Experiment):
         graph_embeddings = np.array([graph['graph_embedding'][:, channel_index] for graph in channel_graphs])
         e.log(f' * filtered {len(channel_indices)} elements from {len(indices)}')
         
+        # Fit HDBSCAN. For metrics not natively supported by HDBSCAN's tree-based algorithms
+        # (e.g. cosine), we use euclidean on the raw embeddings instead. For L2-normalized
+        # embeddings (unit sphere), euclidean preserves the same distance ranking as cosine
+        # (euclidean^2 = 2 * cosine_distance). This allows HDBSCAN's prediction functions
+        # (membership_vector, approximate_predict) to work for all metrics.
+        _TREE_METRICS = {'euclidean', 'manhattan', 'minkowski', 'chebyshev', 'l1', 'l2', 'cityblock'}
+        if e.CLUSTERING_METRIC in _TREE_METRICS:
+            hdbscan_metric = e.CLUSTERING_METRIC
+        else:
+            hdbscan_metric = 'euclidean'
+            e.log(f'  metric {e.CLUSTERING_METRIC} not supported by HDBSCAN trees, '
+                  f'using euclidean (equivalent for L2-normalized embeddings)')
+
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=e.MIN_CLUSTER_SIZE,
             min_samples=e.MIN_SAMPLES,
-            metric='manhattan',
+            metric=hdbscan_metric,
             cluster_selection_method=e.CLUSTER_SELECTION_METHOD,
+            prediction_data=True,
         )
-        # labels: (B, )
-        # This is an array that contains the cluster indices for every element of the dataset. It assigns an integer 
-        # cluster index to each element, where -1 is a special index indicating that an element does not belong to 
-        # any cluster.
         labels = clusterer.fit_predict(graph_embeddings)
-        # A list of all the possible cluster indices from which we can derive how many clusters there have been found 
+        # labels: (B, )
+        # This is an array that contains the cluster indices for every element of the dataset. It assigns an integer
+        # cluster index to each element, where -1 is a special index indicating that an element does not belong to
+        # any cluster.
+        # A list of all the possible cluster indices from which we can derive how many clusters there have been found
         # in general.
+        channel_clusterers[channel_index] = clusterer
+        channel_labels[channel_index] = labels
+
         clusters = [c for c in set(labels) if c >= 0]
         num_clusters = len(clusters)
         e.log(f' * found {num_clusters} clusters')
@@ -496,7 +531,12 @@ def experiment(e: Experiment):
             # cluster_graph_embeddings: (B_cluster, D)
             cluster_graph_embeddings = graph_embeddings[mask]
             # cluster_centroid: (D, )
-            cluster_centroid = np.mean(cluster_graph_embeddings, axis=0)
+            if e.CLUSTER_REPRESENTATIVE == 'medoid':
+                intra_dists = pairwise_distances(cluster_graph_embeddings, metric=e.CLUSTERING_METRIC)
+                medoid_idx = np.argmin(intra_dists.sum(axis=1))
+                cluster_centroid = cluster_graph_embeddings[medoid_idx]
+            else:
+                cluster_centroid = np.mean(cluster_graph_embeddings, axis=0)
             # cluster_indices: (B_cluster, )
             cluster_indices = channel_indices[mask]
             cluster_elements = deepcopy([index_data_map[i] for i in cluster_indices])
@@ -512,6 +552,7 @@ def experiment(e: Experiment):
             info = {
                 'channel_index':        channel_index,
                 'index':                cluster_index,
+                'hdbscan_label':        cluster,
                 'embeddings':           cluster_graph_embeddings,
                 'centroid':             cluster_centroid,
                 'index_tuples':         cluster_index_tuples,
@@ -653,7 +694,7 @@ def experiment(e: Experiment):
                 centroid_distances = pairwise_distances(
                     np.expand_dims(centroid, axis=0),
                     [i['centroid'] for i in infos],
-                    metric='manhattan',
+                    metric=e.CLUSTERING_METRIC,
                 )
                 
                 index = np.argmin(centroid_distances[0])
@@ -735,7 +776,7 @@ def experiment(e: Experiment):
                 n_neighbors=100,
                 min_dist=0.0,
                 n_components=2,
-                metric='manhattan',
+                metric=e.CLUSTERING_METRIC,
                 repulsion_strength=1.0,
             )
             mapped = mapper.fit_transform(embeddings)
@@ -811,7 +852,29 @@ def experiment(e: Experiment):
         logger=e.logger,
     )
     writer.write(cluster_infos)
-    
+
+    # ~ Save centroids as a standalone JSON file for easy downstream consumption
+    centroids_list = []
+    for info in cluster_infos:
+        centroids_list.append({
+            'index': info['index'],
+            'channel': info['channel_index'],
+            'centroid': info['centroid'].tolist(),
+        })
+
+    centroids_path = os.path.join(e.path, 'centroids.json')
+    with open(centroids_path, 'w') as f:
+        json.dump(centroids_list, f, indent=4)
+    e.log(f'saved {len(centroids_list)} centroids to {centroids_path}')
+
+    # ~ Save fitted HDBSCAN clusterers for downstream use
+    # These contain the condensed tree and prediction data needed for membership_vector()
+    # on new/unseen points. Load with: clusterers = pickle.load(open('clusterers.pkl', 'rb'))
+    clusterers_path = os.path.join(e.path, 'clusterers.pkl')
+    with open(clusterers_path, 'wb') as f:
+        pickle.dump(channel_clusterers, f)
+    e.log(f'saved {len(channel_clusterers)} fitted HDBSCAN clusterers to {clusterers_path}')
+
     # ~ creating the concept report
     # Based on the raw information about the extracted concept clusters we now want to generate a PDF report 
     # file which presents that information to a user in a more structured way.
@@ -835,6 +898,437 @@ def experiment(e: Experiment):
         normalize_centroid=True,
     )
 
+    # ~ Per-channel reference statistics
+    # Precompute per-channel pairwise distance statistics from a sample of the dataset.
+    # These are used as context for the centroid distance matrix and the normalized matrix.
+    # We also store the per-channel embeddings for reuse in the distribution plots below.
+
+    PAIRWISE_SAMPLE_SIZE = 2000
+    channel_stats: t.Dict[int, dict] = {}
+    channel_embeddings_map: t.Dict[int, np.ndarray] = {}
+
+    for channel_index in range(e['num_channels']):
+        ch_embeddings = np.array([
+            graph['graph_embedding'][:, channel_index]
+            for graph in graphs
+            if graph['graph_fidelity'][channel_index] > e.FIDELITY_THRESHOLD
+        ])
+        channel_embeddings_map[channel_index] = ch_embeddings
+
+        # Sample for pairwise distance computation to keep it tractable
+        n = len(ch_embeddings)
+        if n > PAIRWISE_SAMPLE_SIZE:
+            sample_idx = np.random.choice(n, size=PAIRWISE_SAMPLE_SIZE, replace=False)
+            sample = ch_embeddings[sample_idx]
+        else:
+            sample = ch_embeddings
+
+        pw_dists = pairwise_distances(sample, metric=e.CLUSTERING_METRIC)
+        # Extract upper triangle (excluding diagonal) for statistics
+        triu_idx = np.triu_indices_from(pw_dists, k=1)
+        pw_values = pw_dists[triu_idx]
+
+        channel_stats[channel_index] = {
+            'mean': float(np.mean(pw_values)),
+            'median': float(np.median(pw_values)),
+            'std': float(np.std(pw_values)),
+            'pairwise_values': pw_values,
+        }
+        e.log(f'channel {channel_index} pairwise distance stats: '
+              f'mean={channel_stats[channel_index]["mean"]:.4f}, '
+              f'median={channel_stats[channel_index]["median"]:.4f}, '
+              f'std={channel_stats[channel_index]["std"]:.4f}')
+
+    # ~ Centroid distance matrix
+    # For each pair of cluster centroids we compute the pairwise distance using the configured metric
+    # and annotate with per-channel reference statistics (mean/median pairwise distance).
+
+    if len(cluster_infos) >= 2:
+        e.log('creating centroid distance matrix...')
+        centroids = np.array([info['centroid'] for info in cluster_infos])
+        centroid_dist_matrix = pairwise_distances(centroids, metric=e.CLUSTERING_METRIC)
+
+        cluster_labels = [f"ch{info['channel_index']}_cl{info['index']}" for info in cluster_infos]
+
+        # Build a subtitle with per-channel reference stats
+        stats_lines = []
+        for ch_idx in sorted(channel_stats.keys()):
+            s = channel_stats[ch_idx]
+            stats_lines.append(f'Ch{ch_idx} pairwise: mean={s["mean"]:.3f}, median={s["median"]:.3f}, std={s["std"]:.3f}')
+
+        fig_matrix, ax_matrix = plt.subplots(
+            figsize=(max(8, len(cluster_infos)), max(6, len(cluster_infos) * 0.8)),
+        )
+        im = ax_matrix.imshow(centroid_dist_matrix, cmap='coolwarm')
+        ax_matrix.set_xticks(range(len(cluster_labels)))
+        ax_matrix.set_xticklabels(cluster_labels, rotation=45, ha='right', fontsize=8)
+        ax_matrix.set_yticks(range(len(cluster_labels)))
+        ax_matrix.set_yticklabels(cluster_labels, fontsize=8)
+        ax_matrix.set_title(
+            f'Centroid Distance Matrix ({e.CLUSTERING_METRIC})\n'
+            + '\n'.join(stats_lines),
+            fontsize=9,
+        )
+
+        for i in range(len(cluster_labels)):
+            for j in range(len(cluster_labels)):
+                ax_matrix.text(j, i, f'{centroid_dist_matrix[i, j]:.2f}',
+                               ha='center', va='center', fontsize=6,
+                               color='black')
+
+        fig_matrix.colorbar(im)
+        fig_matrix.tight_layout()
+        fig_matrix.savefig(os.path.join(e.path, 'centroid_distance_matrix.png'), dpi=150)
+        plt.close(fig_matrix)
+
+    # ~ Normalized centroid distance matrix
+    # Same matrix but each entry is expressed in units of standard deviations of the overall
+    # pairwise distance distribution for the corresponding channel pair.
+
+    if len(cluster_infos) >= 2:
+        e.log('creating normalized centroid distance matrix...')
+        normalized_matrix = np.zeros_like(centroid_dist_matrix)
+        for i, info_i in enumerate(cluster_infos):
+            for j, info_j in enumerate(cluster_infos):
+                # Use the channel of the row cluster for normalization;
+                # for cross-channel pairs, average both channels' stats.
+                ch_i = info_i['channel_index']
+                ch_j = info_j['channel_index']
+                if ch_i == ch_j:
+                    std = channel_stats[ch_i]['std']
+                    mean = channel_stats[ch_i]['mean']
+                else:
+                    std = (channel_stats[ch_i]['std'] + channel_stats[ch_j]['std']) / 2
+                    mean = (channel_stats[ch_i]['mean'] + channel_stats[ch_j]['mean']) / 2
+
+                if std > 0:
+                    normalized_matrix[i, j] = (centroid_dist_matrix[i, j] - mean) / std
+                else:
+                    normalized_matrix[i, j] = 0.0
+
+        fig_norm, ax_norm = plt.subplots(
+            figsize=(max(8, len(cluster_infos)), max(6, len(cluster_infos) * 0.8)),
+        )
+        im_norm = ax_norm.imshow(normalized_matrix, cmap='coolwarm')
+        ax_norm.set_xticks(range(len(cluster_labels)))
+        ax_norm.set_xticklabels(cluster_labels, rotation=45, ha='right', fontsize=8)
+        ax_norm.set_yticks(range(len(cluster_labels)))
+        ax_norm.set_yticklabels(cluster_labels, fontsize=8)
+        ax_norm.set_title(
+            f'Normalized Centroid Distance Matrix ({e.CLUSTERING_METRIC})\n'
+            f'Values in std deviations from mean pairwise distance',
+            fontsize=9,
+        )
+
+        for i in range(len(cluster_labels)):
+            for j in range(len(cluster_labels)):
+                ax_norm.text(j, i, f'{normalized_matrix[i, j]:.2f}σ',
+                             ha='center', va='center', fontsize=6,
+                             color='black')
+
+        fig_norm.colorbar(im_norm)
+        fig_norm.tight_layout()
+        fig_norm.savefig(os.path.join(e.path, 'centroid_distance_matrix_normalized.png'), dpi=150)
+        plt.close(fig_norm)
+
+    # ~ Per-channel pairwise distance reference distribution
+    # For each channel, plot the sampled pairwise distance distribution as a reference for the
+    # overall scale of the embedding space.
+
+    e.log('creating per-channel pairwise distance reference distributions...')
+    for channel_index in range(e['num_channels']):
+        stats = channel_stats[channel_index]
+        pw_values = stats['pairwise_values']
+
+        fig_ref, ax_ref = plt.subplots(figsize=(8, 5))
+        ax_ref.hist(pw_values, bins=50, color='lightgray', edgecolor='black', alpha=0.7)
+        ax_ref.axvline(stats['mean'], color='blue', linestyle='--', label=f'mean={stats["mean"]:.3f}')
+        ax_ref.axvline(stats['median'], color='green', linestyle='--', label=f'median={stats["median"]:.3f}')
+
+        # Mark centroid distances for clusters in this channel
+        ch_infos = [info for info in cluster_infos if info['channel_index'] == channel_index]
+        for i, info_a in enumerate(ch_infos):
+            for j, info_b in enumerate(ch_infos):
+                if j <= i:
+                    continue
+                d = pairwise_distances(
+                    np.expand_dims(info_a['centroid'], axis=0),
+                    np.expand_dims(info_b['centroid'], axis=0),
+                    metric=e.CLUSTERING_METRIC,
+                )[0, 0]
+                ax_ref.axvline(d, color='red', linestyle='-', linewidth=2,
+                               label=f'cl{info_a["index"]}<->cl{info_b["index"]}={d:.3f}')
+
+        ax_ref.set_xlabel(f'Distance ({e.CLUSTERING_METRIC})')
+        ax_ref.set_ylabel('Count')
+        ax_ref.set_title(
+            f'Pairwise Distance Distribution — Channel {channel_index} '
+            f'({e.CHANNEL_INFOS[channel_index]["name"]})\n'
+            f'(sampled {min(len(channel_embeddings_map[channel_index]), PAIRWISE_SAMPLE_SIZE)} elements)',
+            fontsize=9,
+        )
+        ax_ref.legend(fontsize=8)
+        fig_ref.tight_layout()
+        fig_ref.savefig(os.path.join(e.path, f'pairwise_distance_distribution__ch{channel_index}.png'), dpi=150)
+        plt.close(fig_ref)
+
+    # ~ Per-cluster distance distributions
+    # For each cluster we compute the distance from every element in the dataset (that passes the
+    # fidelity threshold for the cluster's channel) to the cluster centroid and plot the distribution
+    # as a histogram. Distances to other centroids (especially within the same channel) are marked
+    # as vertical lines.
+
+    e.log('creating per-cluster score distributions...')
+
+    # We store per-cluster scores and intra/inter splits for reuse in the summary analysis below.
+    cluster_score_data: t.List[dict] = []
+
+    for info in cluster_infos:
+        ch_idx = info['channel_index']
+        cl_idx = info['index']
+        centroid = info['centroid']
+        hdbscan_label = info.get('hdbscan_label')
+
+        all_channel_emb = channel_embeddings_map[ch_idx]
+        ch_labels = channel_labels.get(ch_idx)
+
+        # Compute scores from all fidelity-passing elements to this cluster via the hook
+        scores = e.apply_hook(
+            'compute_cluster_score',
+            embeddings=all_channel_emb,
+            cluster_info=info,
+            channel_clusterers=channel_clusterers,
+        )
+
+        # Split into intra-cluster (elements belonging to this cluster) and inter-cluster (rest)
+        if ch_labels is not None and hdbscan_label is not None:
+            intra_mask = (ch_labels == hdbscan_label)
+        else:
+            intra_mask = np.zeros(len(scores), dtype=bool)
+
+        intra_scores = scores[intra_mask]
+        inter_scores = scores[~intra_mask]
+
+        cluster_score_data.append({
+            'info': info,
+            'scores': scores,
+            'intra_scores': intra_scores,
+            'inter_scores': inter_scores,
+        })
+
+        # -- Per-cluster score distribution plot (existing)
+        fig_dist, ax_dist = plt.subplots(figsize=(8, 5))
+        ax_dist.hist(scores, bins=50, color=info['color'], edgecolor='black', alpha=0.7)
+        ax_dist.set_xlabel('Score (lower = better fit)')
+        ax_dist.set_ylabel('Count')
+        ax_dist.set_title(f'Score Distribution to Cluster {cl_idx} (Channel {ch_idx} - {info["name"]})')
+        ax_dist.axvline(np.median(scores), color='red', linestyle='--', label=f'median={np.median(scores):.2f}')
+
+        # Mark distances from other centroids to this cluster's centroid
+        for other_info in cluster_infos:
+            if other_info['index'] == cl_idx:
+                continue
+            d = pairwise_distances(
+                np.expand_dims(centroid, axis=0),
+                np.expand_dims(other_info['centroid'], axis=0),
+                metric=e.CLUSTERING_METRIC,
+            )[0, 0]
+            is_same_channel = other_info['channel_index'] == ch_idx
+            ax_dist.axvline(
+                d,
+                color='darkblue' if is_same_channel else 'gray',
+                linestyle='-' if is_same_channel else ':',
+                linewidth=2 if is_same_channel else 1,
+                alpha=1.0 if is_same_channel else 0.5,
+                label=f'{"→" if is_same_channel else "⇢"}cl{other_info["index"]}={d:.3f}',
+            )
+
+        ax_dist.legend(fontsize=8)
+        fig_dist.tight_layout()
+        fig_dist.savefig(os.path.join(e.path, f'distance_distribution__ch{ch_idx}_cl{cl_idx}.png'), dpi=150)
+        plt.close(fig_dist)
+
+    # ~ Intra vs inter cluster score analysis
+    # For each cluster, compare the score distribution of elements that HDBSCAN assigned to that
+    # cluster (intra) versus all other fidelity-passing elements in the same channel (inter).
+    # This uses whatever scoring method the compute_cluster_score hook provides.
+
+    if len(cluster_score_data) > 0:
+        e.log('creating intra vs inter cluster score analysis...')
+
+        # -- Per-cluster overlaid histograms
+        for csd in cluster_score_data:
+            info = csd['info']
+            ch_idx = info['channel_index']
+            cl_idx = info['index']
+            intra = csd['intra_scores']
+            inter = csd['inter_scores']
+
+            intra_mean = float(np.mean(intra)) if len(intra) > 0 else 0.0
+            intra_std = float(np.std(intra)) if len(intra) > 0 else 0.0
+            inter_mean = float(np.mean(inter)) if len(inter) > 0 else 0.0
+            inter_std = float(np.std(inter)) if len(inter) > 0 else 0.0
+            ratio = inter_mean / intra_mean if intra_mean > 0 else float('inf')
+            gap = inter_mean - intra_mean
+
+            # Store metrics
+            e[f'intra_inter/{cl_idx}/intra_mean'] = intra_mean
+            e[f'intra_inter/{cl_idx}/intra_std'] = intra_std
+            e[f'intra_inter/{cl_idx}/inter_mean'] = inter_mean
+            e[f'intra_inter/{cl_idx}/inter_std'] = inter_std
+            e[f'intra_inter/{cl_idx}/ratio'] = ratio
+            e[f'intra_inter/{cl_idx}/gap'] = gap
+            e[f'intra_inter/{cl_idx}/n_intra'] = int(len(intra))
+            e[f'intra_inter/{cl_idx}/n_inter'] = int(len(inter))
+
+            e.log(f'  cluster {cl_idx} (ch{ch_idx}): '
+                  f'intra={intra_mean:.4f}±{intra_std:.4f} (n={len(intra)}), '
+                  f'inter={inter_mean:.4f}±{inter_std:.4f} (n={len(inter)}), '
+                  f'ratio={ratio:.2f}, gap={gap:.4f}')
+
+            fig_ii, ax_ii = plt.subplots(figsize=(8, 5))
+
+            # Determine shared bin edges across both distributions
+            all_vals = np.concatenate([intra, inter]) if len(intra) > 0 else inter
+            bins = np.linspace(float(np.min(all_vals)), float(np.max(all_vals)), 50)
+
+            if len(intra) > 0:
+                ax_ii.hist(intra, bins=bins, color='green', alpha=0.6, edgecolor='darkgreen',
+                           label=f'Intra (n={len(intra)}, μ={intra_mean:.3f})')
+                ax_ii.axvline(intra_mean, color='green', linestyle='--', linewidth=2)
+
+            if len(inter) > 0:
+                ax_ii.hist(inter, bins=bins, color='red', alpha=0.4, edgecolor='darkred',
+                           label=f'Inter (n={len(inter)}, μ={inter_mean:.3f})')
+                ax_ii.axvline(inter_mean, color='red', linestyle='--', linewidth=2)
+
+            ax_ii.set_xlabel('Score (lower = better fit)')
+            ax_ii.set_ylabel('Count')
+            ax_ii.set_title(
+                f'Intra vs Inter Cluster Scores — Cluster {cl_idx} (Ch {ch_idx} - {info["name"]})\n'
+                f'Gap={gap:.3f}  Ratio={ratio:.2f}'
+            )
+            ax_ii.legend(fontsize=9)
+            fig_ii.tight_layout()
+            fig_ii.savefig(os.path.join(e.path, f'intra_inter__ch{ch_idx}_cl{cl_idx}.png'), dpi=150)
+            plt.close(fig_ii)
+
+        # -- Summary grouped bar chart across all clusters
+        n_clusters = len(cluster_score_data)
+        cluster_labels_bar = [f"ch{csd['info']['channel_index']}_cl{csd['info']['index']}" for csd in cluster_score_data]
+        intra_means = [float(np.mean(csd['intra_scores'])) if len(csd['intra_scores']) > 0 else 0.0
+                       for csd in cluster_score_data]
+        intra_stds = [float(np.std(csd['intra_scores'])) if len(csd['intra_scores']) > 0 else 0.0
+                      for csd in cluster_score_data]
+        inter_means = [float(np.mean(csd['inter_scores'])) if len(csd['inter_scores']) > 0 else 0.0
+                       for csd in cluster_score_data]
+        inter_stds = [float(np.std(csd['inter_scores'])) if len(csd['inter_scores']) > 0 else 0.0
+                      for csd in cluster_score_data]
+
+        x = np.arange(n_clusters)
+        bar_width = 0.35
+
+        fig_summary, ax_summary = plt.subplots(figsize=(max(8, n_clusters * 2), 5))
+        bars_intra = ax_summary.bar(x - bar_width / 2, intra_means, bar_width,
+                                     yerr=intra_stds, capsize=4,
+                                     color='green', alpha=0.7, label='Intra-cluster')
+        bars_inter = ax_summary.bar(x + bar_width / 2, inter_means, bar_width,
+                                     yerr=inter_stds, capsize=4,
+                                     color='red', alpha=0.7, label='Inter-cluster')
+
+        # Annotate ratios above each group
+        for i in range(n_clusters):
+            r = inter_means[i] / intra_means[i] if intra_means[i] > 0 else float('inf')
+            y_max = max(inter_means[i] + inter_stds[i], intra_means[i] + intra_stds[i])
+            ax_summary.text(x[i], y_max + 0.02, f'{r:.2f}x',
+                           ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+        ax_summary.set_xlabel('Cluster')
+        ax_summary.set_ylabel('Mean Score (lower = better fit)')
+        ax_summary.set_title('Intra vs Inter Cluster Scores — Summary')
+        ax_summary.set_xticks(x)
+        ax_summary.set_xticklabels(cluster_labels_bar, fontsize=9)
+        ax_summary.legend()
+        fig_summary.tight_layout()
+        fig_summary.savefig(os.path.join(e.path, 'intra_inter_summary.png'), dpi=150)
+        plt.close(fig_summary)
+
+        e.log(f'created intra vs inter analysis for {n_clusters} clusters')
+
+    # ~ Sample element distance heatmap
+    # Pick a configurable number of random elements from the dataset and compute their distances
+    # to every cluster centroid/medoid. Visualized as a heatmap with rows sorted by nearest cluster.
+
+    if e.NUM_SAMPLE_ELEMENTS > 0 and len(cluster_infos) > 0:
+        e.log(f'creating sample element score heatmap ({e.NUM_SAMPLE_ELEMENTS} elements)...')
+
+        n_samples = min(e.NUM_SAMPLE_ELEMENTS, len(graphs))
+        sample_indices = np.random.choice(len(graphs), size=n_samples, replace=False)
+        sample_graphs = [graphs[i] for i in sample_indices]
+
+        # Compute scores from each sampled element to each cluster via the hook.
+        # membership_vector() handles arbitrary points (even unseen ones), so no
+        # fidelity-position mapping is needed.
+        cluster_labels_hm = [f"ch{info['channel_index']}_cl{info['index']}" for info in cluster_infos]
+        dist_data = np.zeros((n_samples, len(cluster_infos)))
+
+        for j, info in enumerate(cluster_infos):
+            ch_idx = info['channel_index']
+            sample_embeddings = np.array([g['graph_embedding'][:, ch_idx] for g in sample_graphs])
+
+            dist_data[:, j] = e.apply_hook(
+                'compute_cluster_score',
+                embeddings=sample_embeddings,
+                cluster_info=info,
+                channel_clusterers=channel_clusterers,
+            )
+
+        # Sort rows by their nearest cluster for visual grouping
+        nearest_cluster = np.argmin(dist_data, axis=1)
+        sort_order = np.lexsort((dist_data[np.arange(n_samples), nearest_cluster], nearest_cluster))
+        dist_data_sorted = dist_data[sort_order]
+        sample_indices_sorted = sample_indices[sort_order]
+
+        # Build row labels (use graph_repr/SMILES if available, otherwise dataset index)
+        row_labels = []
+        for idx in sample_indices_sorted:
+            repr_str = graphs[idx].get('graph_repr', '')
+            if repr_str and len(repr_str) <= 30:
+                row_labels.append(f'{idx}: {repr_str}')
+            elif repr_str:
+                row_labels.append(f'{idx}: {repr_str[:27]}...')
+            else:
+                row_labels.append(str(idx))
+
+        fig_hm, ax_hm = plt.subplots(
+            figsize=(max(8, len(cluster_infos) * 1.5), max(8, n_samples * 0.35)),
+        )
+        im_hm = ax_hm.imshow(dist_data_sorted, cmap='coolwarm', aspect='auto')
+
+        ax_hm.set_xticks(range(len(cluster_labels_hm)))
+        ax_hm.set_xticklabels(cluster_labels_hm, rotation=45, ha='right', fontsize=8)
+        ax_hm.set_yticks(range(n_samples))
+        ax_hm.set_yticklabels(row_labels, fontsize=7)
+        ax_hm.set_title(
+            f'Sample Element Scores to Cluster Representatives\n'
+            f'Sorted by nearest cluster — representative: {e.CLUSTER_REPRESENTATIVE}',
+            fontsize=9,
+        )
+
+        # Annotate values and mark the minimum per row
+        for i in range(n_samples):
+            min_j = np.argmin(dist_data_sorted[i])
+            for j in range(len(cluster_infos)):
+                fontweight = 'bold' if j == min_j else 'normal'
+                ax_hm.text(j, i, f'{dist_data_sorted[i, j]:.2f}',
+                           ha='center', va='center', fontsize=6,
+                           fontweight=fontweight, color='black')
+
+        fig_hm.colorbar(im_hm)
+        fig_hm.tight_layout()
+        fig_hm.savefig(os.path.join(e.path, 'sample_element_distances.png'), dpi=150)
+        plt.close(fig_hm)
+
     # :hook post_clustering:
     #       This hook is called at the very end of the experiment after all clustering, prototype optimization,
     #       and report generation is complete. It receives all the relevant data structures and can be used
@@ -847,7 +1341,31 @@ def experiment(e: Experiment):
         model=model,
         processing=processing,
         index_data_map=index_data_map,
+        channel_clusterers=channel_clusterers,
+        channel_labels=channel_labels,
     )
+
+
+# :hook compute_cluster_score:
+#       Compute scores indicating how well elements fit a given cluster. Returns an (N,)
+#       array of scores where lower values mean better fit (like a distance). Override this
+#       hook to use alternative scoring methods such as HDBSCAN membership probability.
+#       The hook receives ``channel_clusterers`` (dict of fitted HDBSCAN objects per channel)
+#       which can be used with ``hdbscan.prediction.membership_vector()`` to compute soft
+#       cluster membership for any set of embeddings.
+@experiment.hook('compute_cluster_score', default=True, replace=False)
+def compute_cluster_score(e: Experiment,
+                          embeddings: np.ndarray,
+                          cluster_info: dict,
+                          **kwargs) -> np.ndarray:
+    """
+    Default: pairwise distance to the cluster centroid/medoid.
+    Convention: lower score = better fit.
+    """
+    centroid = cluster_info['centroid']
+    return pairwise_distances(
+        embeddings, centroid.reshape(1, -1), metric=e.CLUSTERING_METRIC
+    ).flatten()
 
 
 @experiment.hook('post_clustering', default=False, replace=False)

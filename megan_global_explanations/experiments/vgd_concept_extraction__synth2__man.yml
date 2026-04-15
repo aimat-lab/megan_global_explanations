@@ -1,0 +1,8 @@
+extend: vgd_concept_extraction__synth2.py
+
+parameters:
+  CLUSTERING_METRIC: 'manhattan'
+  FIDELITY_THRESHOLD: 0.5
+  MIN_CLUSTER_SIZE: 1000
+  MIN_SAMPLES: 100
+  CLUSTER_SELECTION_METHOD: 'eom'
