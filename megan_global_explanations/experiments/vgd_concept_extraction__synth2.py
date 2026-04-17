@@ -10,6 +10,7 @@ Additionally, this experiment creates a CSV file with SMILES and distances to al
 for each sample in the dataset via the post_clustering hook.
 """
 import os
+import pickle
 import pathlib
 import typing as t
 
@@ -17,6 +18,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.metrics import pairwise_distances
+from scipy.cluster.hierarchy import fcluster
 from rdkit import Chem
 from rdkit.Chem import Draw
 from PIL import Image, ImageDraw, ImageFont
@@ -99,6 +101,54 @@ CLUSTER_SELECTION_METHOD: str = 'eom'
 #       cluster member whose total distance to all other members is minimal. The medoid is more
 #       robust to outliers and is always a real data point, but is more expensive to compute.
 CLUSTER_REPRESENTATIVE: str = 'medoid'
+# :param CLUSTER_SCORE_METHOD:
+#       Selects how ``compute_cluster_score`` scores embeddings against a cluster. This choice
+#       propagates through every downstream consumer of the hook: intra/inter diagnostics,
+#       per-cluster score distributions, the concept-extraction CSV, and any inference-time
+#       scoring that re-uses the fitted artifacts.
+#         - 'membership': 1 - HDBSCAN soft membership probability from
+#           ``hdbscan.prediction.membership_vector``. Produces a true [0, 1] probability-like
+#           score but is known to degenerate under ``CLUSTER_SELECTION_METHOD='leaf'``
+#           (returns 0 for core members), which flattens the intra/inter separation.
+#         - 'distance': pairwise distance between the embedding and the cluster's
+#           representative (centroid or medoid, per ``CLUSTER_REPRESENTATIVE``) using
+#           ``CLUSTERING_METRIC``. Works identically regardless of cluster-selection method
+#           and is the safer default when using leaf selection.
+#         - 'knn': mean of the ``CLUSTER_SCORE_KNN_K`` smallest pairwise distances from
+#           the embedding to the cluster's training members, under ``CLUSTERING_METRIC``.
+#           Shape-aware (tracks the cluster's actual geometry rather than its centroid),
+#           smooth falloff at the boundary, and unaffected by the membership_vector /
+#           leaf-selection degeneracy.
+CLUSTER_SCORE_METHOD: str = 'membership'
+# :param CLUSTER_SCORE_KNN_K:
+#       Used only when ``CLUSTER_SCORE_METHOD == 'knn'``. Number of nearest cluster
+#       members to average over for the score. Smaller values make the score more
+#       sensitive to individual outlier members; larger values smooth out the signal.
+CLUSTER_SCORE_KNN_K: int = 5
+# :param ANALYZE_CLUSTER_HIERARCHY:
+#       When True, after the per-cluster intra/inter analysis the experiment runs
+#       agglomerative hierarchical clustering on the existing clusters (per channel)
+#       using the full member point clouds. This uncovers super-clusters that
+#       represent the same semantic motif in different local contexts, without
+#       requiring any predefined SMARTS patterns. Produces cluster_hierarchy.pkl,
+#       dendrogram_ch{N}.png per channel, and a log summary at three cut-heights.
+#       Scoring is not affected — this is an analysis-time artefact only.
+ANALYZE_CLUSTER_HIERARCHY: bool = True
+# :param CLUSTER_HIERARCHY_LINKAGE:
+#       Linkage method passed to ``scipy.cluster.hierarchy.linkage``. 'average' is
+#       the robust default and what the inter-cluster distance computation feeds.
+#       'complete' or 'single' also work with the same input. 'ward' is NOT
+#       compatible because it requires Euclidean distances, whereas the
+#       inter-cluster distances use ``CLUSTERING_METRIC`` (manhattan).
+CLUSTER_HIERARCHY_LINKAGE: str = 'average'
+# :param CLUSTER_HIERARCHY_CUT:
+#       Optional fraction in (0, 1] of the per-channel max merge distance at which to
+#       cut the dendrogram and form super-clusters. When set (e.g. 0.8) the SMARTS
+#       overlap plot is produced a second time using those super-clusters, saved as
+#       ``smarts_cluster_overlap_merged.png``, letting you check whether the chosen
+#       granularity groups semantically-equivalent leaves (e.g. all NH2 clusters).
+#       Set to ``None`` to skip the merged plot.
+CLUSTER_HIERARCHY_CUT: t.Optional[float] = 0.9
 # :param SORT_SIMILARITY:
 #       This boolean flag determines whether the clusters should be sorted by their similarity.
 SORT_SIMILARITY: bool = True
@@ -155,41 +205,60 @@ experiment = Experiment.extend(
 )
 
 
-# Override the base experiment's compute_cluster_score hook to use HDBSCAN soft
-# membership probability via membership_vector(). This gives a real probability
-# for EVERY element (not just assigned members) across ALL clusters, based on
-# the density structure of the condensed tree.
-# Convention: lower score = better fit, so we return 1 - probability.
+# Override the base experiment's compute_cluster_score hook. Three scoring modes are
+# supported via ``CLUSTER_SCORE_METHOD`` (see the parameter docstring above):
+#   - 'membership': 1 - HDBSCAN soft membership probability (density-aware)
+#   - 'distance':   pairwise metric distance to the cluster representative
+#   - 'knn':        mean of the K smallest distances to cluster members (shape-aware)
+# Convention in all cases: lower = better fit.
 @experiment.hook('compute_cluster_score', default=False, replace=True)
 def compute_cluster_score(e: Experiment,
                           embeddings: np.ndarray,
                           cluster_info: dict,
                           channel_clusterers: t.Optional[dict] = None,
                           **kwargs) -> np.ndarray:
-    from hdbscan.prediction import membership_vector
-
     ch_idx = cluster_info['channel_index']
     hdbscan_label = cluster_info.get('hdbscan_label')
     centroid = cluster_info['centroid']
 
-    # Fallback: pure metric distance when clusterer is not available
-    if channel_clusterers is None or ch_idx not in channel_clusterers or hdbscan_label is None:
+    def _distance_score() -> np.ndarray:
         return pairwise_distances(
             embeddings, centroid.reshape(1, -1), metric=e.CLUSTERING_METRIC
         ).flatten()
 
-    clusterer = channel_clusterers[ch_idx]
+    # Plain metric distance to the cluster representative — works regardless of
+    # whether a fitted clusterer is around and regardless of cluster selection method.
+    if e.CLUSTER_SCORE_METHOD == 'distance':
+        return _distance_score()
 
-    # membership_vector returns (N, n_clusters) probabilities for each element
-    # across all clusters found by this channel's clusterer.
+    # Shape-aware scoring: mean distance to the k nearest cluster members.
+    if e.CLUSTER_SCORE_METHOD == 'knn':
+        members = cluster_info.get('embeddings')
+        if members is None:
+            cluster_members = kwargs.get('cluster_members')
+            if cluster_members is not None and hdbscan_label is not None:
+                members = cluster_members.get(ch_idx, {}).get(hdbscan_label)
+        if members is None or len(members) == 0:
+            return _distance_score()
+        members = np.asarray(members)
+        k = min(int(e.CLUSTER_SCORE_KNN_K), len(members))
+        dists = pairwise_distances(embeddings, members, metric=e.CLUSTERING_METRIC)
+        k_smallest = np.partition(dists, k - 1, axis=1)[:, :k]
+        return k_smallest.mean(axis=1)
+
+    # Membership-probability mode. Fall back to distance when the clusterer isn't
+    # available (e.g. at inference time without the pickled clusterers loaded).
+    if channel_clusterers is None or ch_idx not in channel_clusterers or hdbscan_label is None:
+        return _distance_score()
+
+    from hdbscan.prediction import membership_vector
+
+    clusterer = channel_clusterers[ch_idx]
     mem_vectors = membership_vector(clusterer, embeddings.astype(np.float64))
 
-    # Map hdbscan_label to the column index in the membership vector.
-    # Columns correspond to sorted selected cluster node IDs; HDBSCAN labels
-    # 0, 1, 2, ... map to columns 0, 1, 2, ... in that order.
+    # HDBSCAN labels 0, 1, 2, ... map to columns 0, 1, 2, ... in membership_vector's output.
     cluster_col = hdbscan_label
 
-    # Score = 1 - probability (lower = better fit)
     return 1.0 - mem_vectors[:, cluster_col]
 
 
@@ -282,73 +351,133 @@ def post_clustering(e: Experiment,
         # Build a mapping: dataset_index -> position in graphs list
         index_to_pos = {idx: pos for pos, idx in enumerate(indices)}
 
-        # Determine cluster membership for each graph position
-        # A graph can be in multiple clusters (different channels)
-        pos_to_clusters: t.Dict[int, t.List[int]] = {pos: [] for pos in range(len(graphs))}
-        for info in cluster_infos:
-            cl_idx = info['index']
-            for dataset_idx, _channel_idx in info['index_tuples']:
-                pos = index_to_pos[dataset_idx]
-                pos_to_clusters[pos].append(cl_idx)
+        def plot_smarts_overlap(
+            row_specs: t.List[t.Dict[str, t.Any]],
+            out_name: str,
+            title: str,
+        ) -> None:
+            """Render a SMARTS-overlap heatmap for an arbitrary row grouping.
 
-        # Build the overlap matrix: rows = clusters + "unclustered", columns = SMARTS patterns
-        cluster_indices_list = [info['index'] for info in cluster_infos]
-        row_labels = [f"ch{info['channel_index']}_cl{info['index']}" for info in cluster_infos]
-        row_labels.append('unclustered')
+            ``row_specs`` is a list of ``{'label': str, 'index_tuples': [(idx, ch), ...]}``
+            dicts, one per row. The function appends an 'unclustered' row whose members
+            are the graphs absent from every row's ``index_tuples``.
+            """
+            clustered_positions: t.Set[int] = set()
+            for spec in row_specs:
+                for dataset_idx, _ch in spec['index_tuples']:
+                    clustered_positions.add(index_to_pos[dataset_idx])
 
-        # counts[row][col] = number of matching elements
-        # sizes[row] = total elements in that row
-        n_rows = len(cluster_infos) + 1
-        n_cols = len(pattern_labels)
-        counts = np.zeros((n_rows, n_cols), dtype=int)
-        sizes = np.zeros(n_rows, dtype=int)
+            row_labels_local = [spec['label'] for spec in row_specs] + ['unclustered']
+            n_rows_local = len(row_specs) + 1
+            n_cols_local = len(pattern_labels)
+            counts = np.zeros((n_rows_local, n_cols_local), dtype=int)
+            sizes = np.zeros(n_rows_local, dtype=int)
 
-        # Fill cluster rows
-        for row_idx, info in enumerate(cluster_infos):
-            cl_idx = info['index']
-            for dataset_idx, _channel_idx in info['index_tuples']:
-                pos = index_to_pos[dataset_idx]
-                sizes[row_idx] += 1
-                for col_idx, label in enumerate(pattern_labels):
-                    if graph_matches[pos][label]:
-                        counts[row_idx, col_idx] += 1
+            for row_idx, spec in enumerate(row_specs):
+                for dataset_idx, _ch in spec['index_tuples']:
+                    pos = index_to_pos[dataset_idx]
+                    sizes[row_idx] += 1
+                    for col_idx, label in enumerate(pattern_labels):
+                        if graph_matches[pos][label]:
+                            counts[row_idx, col_idx] += 1
 
-        # Fill unclustered row (elements not in any cluster)
-        unclustered_row = n_rows - 1
-        for pos in range(len(graphs)):
-            if len(pos_to_clusters[pos]) == 0:
-                sizes[unclustered_row] += 1
-                for col_idx, label in enumerate(pattern_labels):
-                    if graph_matches[pos][label]:
-                        counts[unclustered_row, col_idx] += 1
+            unclustered_row = n_rows_local - 1
+            for pos in range(len(graphs)):
+                if pos not in clustered_positions:
+                    sizes[unclustered_row] += 1
+                    for col_idx, label in enumerate(pattern_labels):
+                        if graph_matches[pos][label]:
+                            counts[unclustered_row, col_idx] += 1
 
-        # Compute percentages
-        percentages = np.zeros_like(counts, dtype=float)
-        for i in range(n_rows):
-            if sizes[i] > 0:
-                percentages[i] = counts[i] / sizes[i] * 100
+            percentages = np.zeros_like(counts, dtype=float)
+            for i in range(n_rows_local):
+                if sizes[i] > 0:
+                    percentages[i] = counts[i] / sizes[i] * 100
 
-        # Visualize as heatmap
-        fig_sm, ax_sm = plt.subplots(
-            figsize=(max(6, n_cols * 1.5), max(4, n_rows * 0.8)),
+            fig_sm, ax_sm = plt.subplots(
+                figsize=(max(6, n_cols_local * 1.5), max(4, n_rows_local * 0.8)),
+            )
+            im_sm = ax_sm.imshow(percentages, cmap='coolwarm', aspect='auto', vmin=0, vmax=100)
+            ax_sm.set_xticks(range(n_cols_local))
+            ax_sm.set_xticklabels(pattern_labels, fontsize=9)
+            ax_sm.set_yticks(range(n_rows_local))
+            ax_sm.set_yticklabels(
+                [f'{lbl} (n={sizes[i]})' for i, lbl in enumerate(row_labels_local)],
+                fontsize=8,
+            )
+            ax_sm.set_title(title)
+            for i in range(n_rows_local):
+                for j in range(n_cols_local):
+                    ax_sm.text(j, i, f'{counts[i, j]}\n({percentages[i, j]:.0f}%)',
+                               ha='center', va='center', fontsize=7, color='black')
+            fig_sm.colorbar(im_sm, label='Match %')
+            fig_sm.tight_layout()
+            fig_sm.savefig(os.path.join(e.path, out_name), dpi=150)
+            plt.close(fig_sm)
+            e.log(f'saved {out_name} ({n_rows_local} rows, {n_cols_local} patterns)')
+
+        # Leaf-cluster overlap (original behavior)
+        leaf_specs = [
+            {
+                'label': f"ch{info['channel_index']}_cl{info['index']}",
+                'index_tuples': info['index_tuples'],
+            }
+            for info in cluster_infos
+        ]
+        plot_smarts_overlap(
+            leaf_specs,
+            out_name='smarts_cluster_overlap.png',
+            title='SMARTS Pattern Overlap per Cluster',
         )
-        im_sm = ax_sm.imshow(percentages, cmap='coolwarm', aspect='auto', vmin=0, vmax=100)
-        ax_sm.set_xticks(range(n_cols))
-        ax_sm.set_xticklabels(pattern_labels, fontsize=9)
-        ax_sm.set_yticks(range(n_rows))
-        ax_sm.set_yticklabels([f'{lbl} (n={sizes[i]})' for i, lbl in enumerate(row_labels)], fontsize=8)
-        ax_sm.set_title('SMARTS Pattern Overlap per Cluster')
 
-        for i in range(n_rows):
-            for j in range(n_cols):
-                ax_sm.text(j, i, f'{counts[i, j]}\n({percentages[i, j]:.0f}%)',
-                           ha='center', va='center', fontsize=7, color='black')
+        # Merged-cluster overlap: super-clusters from the hierarchical-clustering
+        # post-processing stage, cut at CLUSTER_HIERARCHY_CUT * max_merge_distance.
+        cut_frac = getattr(e, 'CLUSTER_HIERARCHY_CUT', None)
+        hierarchy_path = os.path.join(e.path, 'cluster_hierarchy.pkl')
+        if cut_frac is not None and os.path.exists(hierarchy_path):
+            with open(hierarchy_path, 'rb') as f:
+                cluster_hierarchy = pickle.load(f)
 
-        fig_sm.colorbar(im_sm, label='Match %')
-        fig_sm.tight_layout()
-        fig_sm.savefig(os.path.join(e.path, 'smarts_cluster_overlap.png'), dpi=150)
-        plt.close(fig_sm)
-        e.log(f'saved SMARTS cluster overlap plot with {n_rows} rows and {n_cols} patterns')
+            channel_to_infos: t.Dict[int, t.List[dict]] = {}
+            for info in cluster_infos:
+                channel_to_infos.setdefault(info['channel_index'], []).append(info)
+
+            merged_specs: t.List[t.Dict[str, t.Any]] = []
+            for ch_idx, infos in channel_to_infos.items():
+                infos_sorted = sorted(infos, key=lambda i: i['index'])
+                if ch_idx not in cluster_hierarchy or len(infos_sorted) < 2:
+                    # Single-cluster channel — pass through unchanged
+                    for info in infos_sorted:
+                        merged_specs.append({
+                            'label': f"ch{ch_idx}_cl{info['index']}",
+                            'index_tuples': info['index_tuples'],
+                        })
+                    continue
+
+                Z = cluster_hierarchy[ch_idx]
+                max_d = float(Z[:, 2].max()) if len(Z) > 0 else 0.0
+                t_cut = float(cut_frac) * max_d
+                grouping = fcluster(Z, t=t_cut, criterion='distance')
+
+                groups: t.Dict[int, t.List[dict]] = {}
+                for leaf_idx, g in enumerate(grouping):
+                    groups.setdefault(int(g), []).append(infos_sorted[leaf_idx])
+
+                for g_id, member_infos in groups.items():
+                    leaves = sorted(m['index'] for m in member_infos)
+                    if len(leaves) == 1:
+                        label = f"ch{ch_idx}_cl{leaves[0]}"
+                    else:
+                        label = f"ch{ch_idx}_[{'+'.join(f'cl{i}' for i in leaves)}]"
+                    tuples = [tup for m in member_infos for tup in m['index_tuples']]
+                    merged_specs.append({'label': label, 'index_tuples': tuples})
+
+            plot_smarts_overlap(
+                merged_specs,
+                out_name='smarts_cluster_overlap_merged.png',
+                title=f'SMARTS Pattern Overlap per Super-Cluster '
+                      f'(dendrogram cut at {cut_frac:.0%} of max merge distance)',
+            )
 
     # ~ Medoid molecule overview
     # For each cluster, create a PNG image with three rows of molecule examples:

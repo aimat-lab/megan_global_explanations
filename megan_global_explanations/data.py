@@ -4,10 +4,12 @@ Beyond the data structures themselves, this module also defines the methods that
 save the data from and to the file system. The data is stored in a JSON file format and also partially 
 based on the visual graph dataset format to represent the concept prototypes for example.
 """
+import io
 import os
 import json
 import shutil
 import logging
+import zipfile
 import collections
 import typing as t
 import typing as typ
@@ -16,6 +18,8 @@ from copy import deepcopy
 
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import pairwise_distances
+from scipy.cluster.hierarchy import fcluster
 from visual_graph_datasets.util import dynamic_import
 from visual_graph_datasets.data import VisualGraphDatasetReader
 from visual_graph_datasets.data import VisualGraphDatasetWriter
@@ -487,5 +491,659 @@ class ConceptReader():
             graph['graph_output'] = info['graph_output']
             graph['graph_embedding'] = info['graph_embedding']
             graph['graph_deviation'] = dev
-            
+
         return graphs
+
+
+# =====================================================================
+# === Clustering archive (.clu) ======================================
+# =====================================================================
+
+
+def select_representatives(
+    distances: np.ndarray,
+    n: int,
+    strategy: str = 'closest',
+    temperature: float = 0.5,
+) -> np.ndarray:
+    """Select representative member indices from a cluster.
+
+    :param distances: (N,) array of distances from each member to the centroid.
+    :param n: Number of representatives to select (capped at ``len(distances)``).
+    :param strategy:
+        - ``'closest'``: deterministic — the *n* nearest members.
+        - ``'temperature'``: stochastic — softmax over negative distances with
+          temperature auto-scaled as ``temperature * median(distances)``.
+          Low values (e.g. 0.5) bias heavily toward the centroid; high values
+          (e.g. 2.0+) approach uniform sampling.
+    :param temperature: Temperature multiplier (used only for ``'temperature'``
+        strategy). Multiplied by the median distance to produce the actual
+        softmax temperature.
+    :returns: Integer index array of selected members.
+    """
+    n = min(n, len(distances))
+    if n <= 0:
+        return np.array([], dtype=int)
+
+    if strategy == 'closest':
+        return np.argsort(distances)[:n]
+
+    if strategy == 'temperature':
+        median_dist = float(np.median(distances))
+        t = temperature * max(median_dist, 1e-9)
+        logits = -np.asarray(distances, dtype=np.float64) / t
+        logits -= logits.max()  # numerical stability
+        probs = np.exp(logits)
+        probs /= probs.sum()
+        return np.random.choice(len(distances), size=n, replace=False, p=probs)
+
+    raise ValueError(f"Unknown representative strategy: {strategy!r}")
+
+
+class ClusterView:
+    """Read-only dict-like + attribute-access view over a single cluster's data.
+
+    Returned by ``Clustering[cluster_id]``. Supports both ``cluster['centroid']``
+    and ``cluster.centroid`` access patterns, as well as iteration over keys.
+    """
+
+    def __init__(self, data: dict):
+        # Use object.__setattr__ to avoid triggering __getattr__
+        object.__setattr__(self, '_data', data)
+
+    def __getitem__(self, key: str):
+        return self._data[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+    def __getattr__(self, name: str):
+        try:
+            return self._data[name]
+        except KeyError:
+            raise AttributeError(f"ClusterView has no attribute '{name}'")
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def __repr__(self) -> str:
+        return f"ClusterView('{self._data.get('id', '?')}')"
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy scalars and arrays (small ones only)."""
+
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray) and obj.size < 100:
+            return obj.tolist()
+        return super().default(obj)
+
+
+def _npy_to_bytes(arr: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    return buf.getvalue()
+
+
+def _bytes_to_npy(data: bytes) -> np.ndarray:
+    return np.load(io.BytesIO(data), allow_pickle=False)
+
+
+class Clustering:
+    """Self-contained clustering result with scoring, hierarchy, and serialization.
+
+    Holds per-channel embeddings, HDBSCAN labels, cluster centroids & members,
+    and optional agglomerative linkage matrices. Serializes to a ``.clu`` zip
+    archive with human-readable JSON metadata and binary ``.npy``/``.npz`` arrays.
+
+    Quick start::
+
+        # Load from archive
+        clustering = Clustering.load('clustering.clu')
+
+        # Score a channel embedding
+        scores = clustering.score(embedding, channel=0, method='knn', k=5)
+
+        # Access individual clusters
+        cl = clustering['ch0_cl3']
+        print(cl.centroid.shape, cl.annotations)
+
+        # Merge at 80% of max linkage distance
+        merged = clustering.at_linkage(80)
+        merged_scores = merged.score(embedding, channel=0)
+
+        # Get the hierarchy as a networkx DiGraph
+        tree = clustering.get_tree(channel=0)
+    """
+
+    SCHEMA_VERSION = 1
+
+    def __init__(self):
+        self.channels: t.Dict[int, dict] = {}
+        self.embedding_dim: int = 0
+        self.schema_version: int = self.SCHEMA_VERSION
+
+        # Populated by _build_index()
+        self.cluster_index: t.Dict[str, dict] = {}
+
+        # For at_linkage() views
+        self.parent: t.Optional['Clustering'] = None
+        self.merged_map: t.Optional[t.Dict[str, t.List[str]]] = None
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_experiment(
+        cls,
+        cluster_infos: t.List[dict],
+        channel_infos: t.Dict[int, dict],
+        clustering_metric: str,
+        channel_embeddings_map: t.Dict[int, np.ndarray],
+        channel_labels: t.Dict[int, np.ndarray],
+        cluster_hierarchy: t.Optional[t.Dict[int, np.ndarray]] = None,
+    ) -> 'Clustering':
+        """Build a :class:`Clustering` from in-memory experiment data.
+
+        This is the primary construction path used at the end of the
+        ``vgd_concept_extraction`` experiment, where all required data
+        structures are already in scope.
+        """
+        obj = cls()
+
+        # Derive embedding_dim from the first available channel
+        for ch_idx, emb in channel_embeddings_map.items():
+            obj.embedding_dim = emb.shape[1]
+            break
+
+        # Group cluster_infos by channel
+        ch_clusters: t.Dict[int, t.List[dict]] = {}
+        for info in cluster_infos:
+            ch_clusters.setdefault(info['channel_index'], []).append(info)
+
+        for ch_idx in sorted(set(channel_embeddings_map.keys()) | set(ch_clusters.keys())):
+            ch_info = channel_infos.get(ch_idx, {})
+            infos = sorted(ch_clusters.get(ch_idx, []), key=lambda i: i['index'])
+
+            clusters = []
+            for info in infos:
+                cl_dict: dict = {
+                    'index': info['index'],
+                    'hdbscan_label': info['hdbscan_label'],
+                    'centroid': np.asarray(info['centroid']),
+                    'members': np.asarray(info['embeddings']),
+                    'metadata': {
+                        'name': info.get('name', ''),
+                        'color': info.get('color', ''),
+                    },
+                    'annotations': {},
+                }
+                if 'representatives' in info:
+                    cl_dict['representatives'] = info['representatives']
+                if 'member_stats' in info:
+                    cl_dict['member_stats'] = info['member_stats']
+                clusters.append(cl_dict)
+
+            obj.channels[ch_idx] = {
+                'name': ch_info.get('name', f'channel_{ch_idx}'),
+                'color': ch_info.get('color', 'gray'),
+                'metric': clustering_metric,
+                'embeddings': np.asarray(channel_embeddings_map.get(ch_idx, np.empty((0, obj.embedding_dim)))),
+                'labels': np.asarray(channel_labels.get(ch_idx, np.empty(0, dtype=int))),
+                'linkage': cluster_hierarchy.get(ch_idx) if cluster_hierarchy else None,
+                'clusters': clusters,
+            }
+
+        obj._build_index()
+        return obj
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def save(self, path: str, max_members: int = 2000) -> None:
+        """Write the clustering to a ``.clu`` zip archive.
+
+        :param path: Output file path (e.g. ``'clustering.clu'``).
+        :param max_members: Per-cluster member cap. Clusters with more members
+            are randomly subsampled to this count in the saved archive only;
+            the in-memory object is not modified.
+        """
+        with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            meta = {
+                'schema_version': self.schema_version,
+                'embedding_dim': self.embedding_dim,
+                'channels': sorted(self.channels.keys()),
+            }
+            zf.writestr('meta.json', json.dumps(meta, indent=2, cls=NumpyEncoder))
+
+            for ch_idx, ch_data in self.channels.items():
+                prefix = f'ch{ch_idx}'
+
+                # channel.json
+                zf.writestr(f'{prefix}/channel.json', json.dumps({
+                    'name': ch_data['name'],
+                    'color': ch_data['color'],
+                    'metric': ch_data['metric'],
+                }, indent=2))
+
+                # clusters.json (includes representatives as nested lists)
+                clusters_json = []
+                for cl in ch_data['clusters']:
+                    entry = {
+                        'index': cl['index'],
+                        'hdbscan_label': cl['hdbscan_label'],
+                        'metadata': cl.get('metadata', {}),
+                        'annotations': cl.get('annotations', {}),
+                    }
+                    if 'representatives' in cl:
+                        entry['representatives'] = cl['representatives']
+                    clusters_json.append(entry)
+                zf.writestr(f'{prefix}/clusters.json',
+                            json.dumps(clusters_json, indent=2, cls=NumpyEncoder))
+
+                # centroids.npy — (K, D) stacked
+                if ch_data['clusters']:
+                    centroids = np.stack([cl['centroid'] for cl in ch_data['clusters']])
+                    zf.writestr(f'{prefix}/centroids.npy', _npy_to_bytes(centroids))
+
+                # members.npz — one key per cluster, subsampled if needed
+                members_dict = {}
+                for i, cl in enumerate(ch_data['clusters']):
+                    m = np.asarray(cl['members'])
+                    if len(m) > max_members:
+                        idx = np.random.choice(len(m), size=max_members, replace=False)
+                        m = m[idx]
+                    members_dict[str(i)] = m
+
+                buf = io.BytesIO()
+                np.savez_compressed(buf, **members_dict)
+                zf.writestr(f'{prefix}/members.npz', buf.getvalue())
+
+                # member_stats.npz — pre-computed per-cluster histogram data
+                stats_dict = {}
+                for i, cl in enumerate(ch_data['clusters']):
+                    ms = cl.get('member_stats')
+                    if ms:
+                        for key, arr in ms.items():
+                            stats_dict[f'cl{i}_{key}'] = np.asarray(arr)
+                if stats_dict:
+                    buf = io.BytesIO()
+                    np.savez_compressed(buf, **stats_dict)
+                    zf.writestr(f'{prefix}/member_stats.npz', buf.getvalue())
+
+                # embeddings.npy
+                zf.writestr(f'{prefix}/embeddings.npy',
+                            _npy_to_bytes(ch_data['embeddings']))
+
+                # labels.npy
+                zf.writestr(f'{prefix}/labels.npy',
+                            _npy_to_bytes(ch_data['labels']))
+
+                # linkage.npy (optional)
+                if ch_data.get('linkage') is not None:
+                    zf.writestr(f'{prefix}/linkage.npy',
+                                _npy_to_bytes(ch_data['linkage']))
+
+    @classmethod
+    def load(cls, path: str) -> 'Clustering':
+        """Load a :class:`Clustering` from a ``.clu`` zip archive."""
+        obj = cls()
+
+        with zipfile.ZipFile(path, 'r') as zf:
+            meta = json.loads(zf.read('meta.json'))
+            obj.schema_version = meta['schema_version']
+            obj.embedding_dim = meta['embedding_dim']
+
+            for ch_idx in meta['channels']:
+                prefix = f'ch{ch_idx}'
+
+                ch_info = json.loads(zf.read(f'{prefix}/channel.json'))
+                clusters_json = json.loads(zf.read(f'{prefix}/clusters.json'))
+
+                centroids = _bytes_to_npy(zf.read(f'{prefix}/centroids.npy')) \
+                    if f'{prefix}/centroids.npy' in zf.namelist() else np.empty((0, obj.embedding_dim))
+
+                members_npz = np.load(io.BytesIO(zf.read(f'{prefix}/members.npz')),
+                                      allow_pickle=False)
+
+                embeddings = _bytes_to_npy(zf.read(f'{prefix}/embeddings.npy'))
+                labels = _bytes_to_npy(zf.read(f'{prefix}/labels.npy'))
+
+                linkage_key = f'{prefix}/linkage.npy'
+                linkage_mat = _bytes_to_npy(zf.read(linkage_key)) \
+                    if linkage_key in zf.namelist() else None
+
+                # member_stats.npz (optional)
+                stats_key = f'{prefix}/member_stats.npz'
+                stats_npz = np.load(io.BytesIO(zf.read(stats_key)), allow_pickle=False) \
+                    if stats_key in zf.namelist() else None
+
+                clusters = []
+                for i, cl_json in enumerate(clusters_json):
+                    cl_dict = {
+                        **cl_json,
+                        'centroid': centroids[i] if i < len(centroids) else np.zeros(obj.embedding_dim),
+                        'members': members_npz[str(i)],
+                    }
+                    # Reconstruct member_stats from the npz
+                    if stats_npz is not None:
+                        ms = {}
+                        for stat_name in ('graph_outputs', 'graph_deviations',
+                                          'mask_sizes', 'centroid_distances'):
+                            npz_key = f'cl{i}_{stat_name}'
+                            if npz_key in stats_npz:
+                                ms[stat_name] = stats_npz[npz_key]
+                        if ms:
+                            cl_dict['member_stats'] = ms
+                    clusters.append(cl_dict)
+
+                obj.channels[ch_idx] = {
+                    'name': ch_info['name'],
+                    'color': ch_info['color'],
+                    'metric': ch_info['metric'],
+                    'embeddings': embeddings,
+                    'labels': labels,
+                    'linkage': linkage_mat,
+                    'clusters': clusters,
+                }
+
+        obj._build_index()
+        return obj
+
+    # ------------------------------------------------------------------
+    # Index building
+    # ------------------------------------------------------------------
+
+    def _build_index(self) -> None:
+        """Populate ``cluster_index`` mapping cluster IDs to their data."""
+        self.cluster_index = {}
+
+        if self.merged_map is not None:
+            # Merged view: build super-cluster entries from parent's leaf data
+            for super_id, leaf_ids in self.merged_map.items():
+                leaf_data = [self.parent.cluster_index[lid] for lid in leaf_ids]
+                ch = leaf_data[0]['channel']
+                self.cluster_index[super_id] = {
+                    'id': super_id,
+                    'channel': ch,
+                    'index': super_id,
+                    'centroid': np.mean([d['centroid'] for d in leaf_data], axis=0),
+                    'members': np.concatenate([d['members'] for d in leaf_data]),
+                    'leaves': leaf_ids,
+                    'metadata': {},
+                    'annotations': {},
+                }
+        else:
+            # Base clustering: one entry per leaf cluster
+            for ch_idx, ch_data in self.channels.items():
+                for cl in ch_data['clusters']:
+                    cl_id = f"ch{ch_idx}_cl{cl['index']}"
+                    self.cluster_index[cl_id] = {
+                        'id': cl_id,
+                        'channel': ch_idx,
+                        **cl,
+                    }
+
+    # ------------------------------------------------------------------
+    # Cluster access
+    # ------------------------------------------------------------------
+
+    def __getitem__(self, cluster_id: str) -> ClusterView:
+        if cluster_id not in self.cluster_index:
+            raise KeyError(f"Unknown cluster ID: {cluster_id!r}")
+        return ClusterView(self.cluster_index[cluster_id])
+
+    def __iter__(self) -> t.Iterator[str]:
+        return iter(self.cluster_index)
+
+    def __len__(self) -> int:
+        return len(self.cluster_index)
+
+    def __contains__(self, cluster_id: str) -> bool:
+        return cluster_id in self.cluster_index
+
+    def to_cluster_infos(self) -> t.List[dict]:
+        """Reconstruct a ``cluster_infos``-style list for ``create_concept_cluster_report``.
+
+        Each entry is a dict with ``index``, ``channel_index``, ``centroid``,
+        ``embeddings``, ``index_tuples``, ``graphs``, and ``image_paths`` — the
+        shape expected by the visualization module's report function.
+
+        When full graph data is not stored (e.g. after loading from a ``.clu``
+        archive), ``graphs`` is built from the stored **representatives**: each
+        representative's importances, predictions, and deviations are packed
+        into a synthetic graph dict. ``image_paths`` will be empty in that case
+        (the report renderer can still produce images from SMILES + importances
+        if a processing class is provided).
+        """
+        result: t.List[dict] = []
+
+        for ch_idx in sorted(self.channels.keys()):
+            ch_data = self.channels[ch_idx]
+            for cl in ch_data['clusters']:
+                idx = cl['index']
+                channel = ch_idx
+                centroid = cl['centroid']
+                members = cl['members']
+
+                # Try to use stored representatives to build graph dicts
+                reps = cl.get('representatives', [])
+                graphs: t.List[dict] = []
+                image_paths: t.List[str] = []
+                index_tuples: t.List[t.Tuple[int, int]] = []
+
+                for rep in reps:
+                    node_imp = np.array(rep['node_importances'])
+                    edge_imp = np.array(rep['edge_importances'])
+                    graph_out = np.array(rep['graph_output'])
+                    graph_dev = np.array(rep['graph_deviation'])
+                    n_nodes = len(node_imp)
+                    graphs.append({
+                        'graph_repr': rep.get('smiles', ''),
+                        'node_importances': node_imp,
+                        'edge_importances': edge_imp,
+                        'graph_output': graph_out,
+                        'graph_deviation': graph_dev,
+                        'node_indices': list(range(n_nodes)),
+                    })
+                    image_paths.append('')
+                    index_tuples.append((rep.get('dataset_index', 0), channel))
+
+                result.append({
+                    'index': idx,
+                    'channel_index': channel,
+                    'centroid': centroid,
+                    'embeddings': members,
+                    'index_tuples': index_tuples,
+                    'graphs': graphs,
+                    'image_paths': image_paths,
+                    'name': cl.get('metadata', {}).get('name', ''),
+                    'color': cl.get('metadata', {}).get('color', ''),
+                })
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
+
+    def score(
+        self,
+        embedding: np.ndarray,
+        channel: int,
+        method: str = 'knn',
+        k: int = 5,
+    ) -> t.Dict[str, float]:
+        """Score an embedding against all clusters in a channel.
+
+        :param embedding: A (D,) embedding vector for the given channel.
+        :param channel: Explanation-channel index.
+        :param method: ``'knn'`` (mean of k nearest member distances) or
+            ``'distance'`` (distance to centroid).
+        :param k: Number of neighbours for knn mode.
+        :returns: ``{cluster_id: score}`` dict. Lower = better fit.
+        """
+        # Resolve the metric from the channel data. For merged views the
+        # channel data is shared with the parent.
+        ch_data = self.channels[channel] if channel in self.channels \
+            else self.parent.channels[channel]
+        metric = ch_data['metric']
+        emb = np.asarray(embedding).reshape(1, -1).astype(np.float64)
+
+        if self.merged_map is not None:
+            # Merged view: compute leaf scores first, aggregate via min
+            leaf_scores = self.parent.score(embedding, channel, method=method, k=k)
+            results: t.Dict[str, float] = {}
+            for super_id, leaf_ids in self.merged_map.items():
+                relevant = [leaf_scores[lid] for lid in leaf_ids
+                            if lid in leaf_scores]
+                if relevant:
+                    results[super_id] = min(relevant)
+            return results
+
+        # Base clustering: score against each leaf cluster in this channel
+        results = {}
+        for cl_id, cl_data in self.cluster_index.items():
+            if cl_data['channel'] != channel:
+                continue
+
+            members = np.asarray(cl_data['members'])
+            if method == 'knn':
+                k_actual = min(k, len(members))
+                if k_actual == 0:
+                    continue
+                dists = pairwise_distances(emb, members, metric=metric)[0]
+                score = float(np.partition(dists, k_actual - 1)[:k_actual].mean())
+            elif method == 'distance':
+                centroid = cl_data['centroid'].reshape(1, -1)
+                score = float(pairwise_distances(emb, centroid, metric=metric)[0, 0])
+            else:
+                raise ValueError(f"Unknown scoring method: {method!r}")
+
+            results[cl_id] = score
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Hierarchy
+    # ------------------------------------------------------------------
+
+    def at_linkage(self, percent: float) -> 'Clustering':
+        """Return a view with clusters merged at *percent* % of max merge distance.
+
+        The returned ``Clustering`` shares the underlying channel data with
+        ``self`` — no arrays are copied. Merged super-clusters get IDs like
+        ``'ch0_s0'``; single-leaf super-clusters keep their original ID.
+        Score aggregation uses **min** across constituent leaves.
+
+        :param percent: Cut height as a percentage of max merge distance (0–100).
+        """
+        view = Clustering.__new__(Clustering)
+        view.channels = self.channels
+        view.embedding_dim = self.embedding_dim
+        view.schema_version = self.schema_version
+        view.parent = self
+        view.merged_map = {}
+
+        for ch_idx, ch_data in self.channels.items():
+            Z = ch_data.get('linkage')
+            clusters = sorted(ch_data['clusters'], key=lambda c: c['index'])
+
+            if Z is None or len(clusters) < 2:
+                for cl in clusters:
+                    leaf_id = f"ch{ch_idx}_cl{cl['index']}"
+                    view.merged_map[leaf_id] = [leaf_id]
+                continue
+
+            max_d = float(Z[:, 2].max())
+            t_cut = (percent / 100.0) * max_d
+            grouping = fcluster(Z, t=t_cut, criterion='distance')
+
+            groups: t.Dict[int, t.List[dict]] = {}
+            for leaf_idx, g in enumerate(grouping):
+                groups.setdefault(int(g), []).append(clusters[leaf_idx])
+
+            super_idx = 0
+            for g_id, member_clusters in groups.items():
+                leaf_ids = [f"ch{ch_idx}_cl{c['index']}" for c in member_clusters]
+                if len(leaf_ids) == 1:
+                    super_id = leaf_ids[0]
+                else:
+                    super_id = f"ch{ch_idx}_s{super_idx}"
+                    super_idx += 1
+                view.merged_map[super_id] = leaf_ids
+
+        view._build_index()
+        return view
+
+    def get_tree(self, channel: int):
+        """Return a ``networkx.DiGraph`` representing the cluster hierarchy.
+
+        Leaf nodes are named ``'ch{N}_cl{M}'`` with attributes ``type``,
+        ``channel``, ``index``, ``centroid``, ``size``, ``annotations``.
+        Internal (merge) nodes are named ``'ch{N}_m{i}'`` with attributes
+        ``type``, ``merge_distance``, ``size``. Edges go from parent to child
+        with ``weight = merge_distance``.
+        """
+        import networkx as nx
+
+        ch_data = self.channels[channel]
+        clusters = sorted(ch_data['clusters'], key=lambda c: c['index'])
+        Z = ch_data.get('linkage')
+
+        G = nx.DiGraph()
+
+        for cl in clusters:
+            cl_id = f"ch{channel}_cl{cl['index']}"
+            G.add_node(cl_id,
+                       type='leaf',
+                       channel=channel,
+                       index=cl['index'],
+                       centroid=cl['centroid'],
+                       size=len(cl['members']),
+                       annotations=cl.get('annotations', {}))
+
+        if Z is None or len(clusters) < 2:
+            return G
+
+        K = len(clusters)
+        for merge_idx, row in enumerate(Z):
+            left, right, dist, count = int(row[0]), int(row[1]), float(row[2]), int(row[3])
+            merge_id = f"ch{channel}_m{merge_idx}"
+
+            child_a = f"ch{channel}_cl{clusters[left]['index']}" if left < K \
+                else f"ch{channel}_m{left - K}"
+            child_b = f"ch{channel}_cl{clusters[right]['index']}" if right < K \
+                else f"ch{channel}_m{right - K}"
+
+            G.add_node(merge_id,
+                       type='merge',
+                       channel=channel,
+                       merge_distance=dist,
+                       size=count)
+            G.add_edge(merge_id, child_a, weight=dist)
+            G.add_edge(merge_id, child_b, weight=dist)
+
+        return G
+
+    def get_forest(self):
+        """Return a ``networkx.DiGraph`` containing all channels as disconnected trees."""
+        import networkx as nx
+
+        G = nx.DiGraph()
+        for ch_idx in self.channels:
+            tree = self.get_tree(ch_idx)
+            G = nx.compose(G, tree)
+        return G

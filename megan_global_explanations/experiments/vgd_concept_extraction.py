@@ -31,7 +31,8 @@ from sklearn.metrics.pairwise import paired_cosine_distances
 from sklearn.metrics.pairwise import cosine_distances
 from sklearn.metrics import silhouette_score
 from sklearn.metrics import davies_bouldin_score
-from scipy.spatial.distance import cosine
+from scipy.spatial.distance import cosine, squareform
+from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from pycomex.functional.experiment import Experiment
 from pycomex.utils import folder_path, file_namespace
 from visual_graph_datasets.config import Config
@@ -58,6 +59,7 @@ from megan_global_explanations.prototype.colors import mutate_remove_node
 from megan_global_explanations.gpt import describe_color_graph
 from megan_global_explanations.data import ConceptWriter
 from megan_global_explanations.data import ConceptReader
+from megan_global_explanations.data import select_representatives
 from megan_global_explanations.utils import EXPERIMENTS_PATH
 
 mpl.use('Agg')
@@ -134,6 +136,28 @@ CLUSTERING_METRIC: str = 'manhattan'
 #       cluster member whose total distance to all other members is minimal. The medoid is more
 #       robust to outliers and is always a real data point, but is more expensive to compute.
 CLUSTER_REPRESENTATIVE: str = 'centroid'
+
+# == REPRESENTATIVE SELECTION PARAMETERS ==
+# These parameters control which cluster members are stored as "representatives"
+# inside the Clustering archive. Representatives carry full explanation data
+# (SMILES, importances, predictions, deviations) so the report PDF can be
+# generated without needing the model or dataset at render time.
+
+# :param NUM_REPRESENTATIVES:
+#       Number of representative members to store per cluster.
+NUM_REPRESENTATIVES: int = 16
+# :param REPRESENTATIVE_STRATEGY:
+#       How to select representatives from the cluster members.
+#         - 'closest': deterministic — the N nearest members to the centroid.
+#         - 'temperature': stochastic — softmax over negative centroid-distances
+#           with temperature auto-scaled by ``REPRESENTATIVE_TEMPERATURE * median_distance``.
+#           Low temperature biases toward the centroid; high temperature gives diversity.
+REPRESENTATIVE_STRATEGY: str = 'temperature'
+# :param REPRESENTATIVE_TEMPERATURE:
+#       Temperature multiplier for the 'temperature' strategy. Expressed as a
+#       fraction of the median intra-cluster centroid distance.
+#       0.5 = strong centroid bias, 1.0 = moderate, 2.0+ = near-uniform.
+REPRESENTATIVE_TEMPERATURE: float = 0.7
 # :param SORT_SIMILARITY:
 #       This boolean flag determines whether the clusters should be sorted by their similarity.
 #       If this is True, the clusters will be sorted by their similarity which means that the order 
@@ -563,6 +587,54 @@ def experiment(e: Experiment):
                 'color':                e.CHANNEL_INFOS[channel_index]['color'],
             }
             
+            # ~ Select representative members and compute member statistics
+            # Representatives carry full explanation data (SMILES, importances, etc.)
+            # so the clustering report can be generated without the model/dataset.
+            num_reps = e.NUM_REPRESENTATIVES
+            rep_strategy = e.REPRESENTATIVE_STRATEGY
+            rep_temperature = e.REPRESENTATIVE_TEMPERATURE
+
+            centroid_dists = pairwise_distances(
+                cluster_graph_embeddings, cluster_centroid.reshape(1, -1),
+                metric=e.CLUSTERING_METRIC,
+            ).flatten()
+
+            rep_indices = select_representatives(
+                centroid_dists, n=num_reps,
+                strategy=rep_strategy, temperature=rep_temperature,
+            )
+
+            representatives = []
+            for ri in rep_indices:
+                graph = cluster_graphs[ri]
+                representatives.append({
+                    'smiles': graph.get('graph_repr', ''),
+                    'dataset_index': int(cluster_index_tuples[ri][0]),
+                    'node_importances': np.asarray(graph.get('node_importances', [])).tolist(),
+                    'edge_importances': np.asarray(graph.get('edge_importances', [])).tolist(),
+                    'graph_output': np.asarray(graph.get('graph_output', [])).tolist(),
+                    'graph_deviation': np.asarray(graph.get('graph_deviation', [])).tolist(),
+                })
+            info['representatives'] = representatives
+
+            info['member_stats'] = {
+                'graph_outputs': np.array([
+                    np.asarray(g.get('graph_output', 0.0)).item()
+                    if np.asarray(g.get('graph_output', 0.0)).ndim == 0
+                    else np.asarray(g.get('graph_output', [0.0]))[0]
+                    for g in cluster_graphs
+                ]),
+                'graph_deviations': np.array([
+                    np.asarray(g.get('graph_deviation', np.zeros((1, 1)))).flatten()
+                    for g in cluster_graphs
+                ]),
+                'mask_sizes': np.array([
+                    np.asarray(g.get('node_importances', np.zeros((1, 1)))).sum(axis=0)
+                    for g in cluster_graphs
+                ]),
+                'centroid_distances': centroid_dists,
+            }
+
             e.log(f' ({cluster}/{num_clusters})'
                   f' - cluster index: {cluster_index}'
                   f' - channel index: {channel_index}'
@@ -868,8 +940,10 @@ def experiment(e: Experiment):
     e.log(f'saved {len(centroids_list)} centroids to {centroids_path}')
 
     # ~ Save fitted HDBSCAN clusterers for downstream use
-    # These contain the condensed tree and prediction data needed for membership_vector()
-    # on new/unseen points. Load with: clusterers = pickle.load(open('clusterers.pkl', 'rb'))
+    # These contain the condensed tree, the raw training embeddings (at
+    # ``prediction_data_.raw_data``), and prediction data needed for membership_vector()
+    # on new/unseen points. Downstream tools (predict_and_score.py) reconstruct per-cluster
+    # member embeddings via ``raw_data[labels_ == label]`` — no extra artefact needed.
     clusterers_path = os.path.join(e.path, 'clusterers.pkl')
     with open(clusterers_path, 'wb') as f:
         pickle.dump(channel_clusterers, f)
@@ -1255,6 +1329,82 @@ def experiment(e: Experiment):
 
         e.log(f'created intra vs inter analysis for {n_clusters} clusters')
 
+    # ~ Post-hoc hierarchical clustering of clusters (per channel)
+    # Agglomerative hierarchical clustering run over the already-found leaf clusters,
+    # one dendrogram per explanation channel. The inter-cluster distance between any
+    # two clusters is the mean pairwise distance between all their members under
+    # CLUSTERING_METRIC (average linkage over the full member point clouds). This
+    # exposes super-cluster structure — e.g. multiple leaf clusters that all capture
+    # the same functional motif in different local contexts — without requiring any
+    # predefined SMARTS patterns. Scoring is not affected; this is an analysis-only
+    # artefact controlled by ANALYZE_CLUSTER_HIERARCHY.
+
+    cluster_hierarchy: t.Dict[int, np.ndarray] = {}
+
+    if getattr(e, 'ANALYZE_CLUSTER_HIERARCHY', False) and len(cluster_infos) >= 2:
+        e.log('running hierarchical clustering over leaf clusters...')
+
+        channel_to_clusters: t.Dict[int, t.List[dict]] = {}
+        for info in cluster_infos:
+            channel_to_clusters.setdefault(info['channel_index'], []).append(info)
+
+        for ch_idx, infos in channel_to_clusters.items():
+            if len(infos) < 2:
+                continue
+
+            infos_sorted = sorted(infos, key=lambda i: i['index'])
+            K = len(infos_sorted)
+
+            inter = np.zeros((K, K), dtype=float)
+            for i in range(K):
+                for j in range(i + 1, K):
+                    d = pairwise_distances(
+                        infos_sorted[i]['embeddings'],
+                        infos_sorted[j]['embeddings'],
+                        metric=e.CLUSTERING_METRIC,
+                    ).mean()
+                    inter[i, j] = d
+                    inter[j, i] = d
+
+            condensed = squareform(inter, checks=False)
+            Z = linkage(condensed, method=e.CLUSTER_HIERARCHY_LINKAGE)
+            cluster_hierarchy[ch_idx] = Z
+
+            leaf_labels = [
+                f"cl{info['index']} (n={len(info['embeddings'])})"
+                for info in infos_sorted
+            ]
+
+            fig_h, ax_h = plt.subplots(figsize=(max(8, K * 0.9), 5))
+            dendrogram(Z, labels=leaf_labels, ax=ax_h, leaf_rotation=45, color_threshold=0)
+            ax_h.set_title(
+                f'Cluster Hierarchy — Channel {ch_idx} '
+                f"({e.CHANNEL_INFOS[ch_idx]['name']})\n"
+                f'linkage={e.CLUSTER_HIERARCHY_LINKAGE}, metric={e.CLUSTERING_METRIC}'
+            )
+            ax_h.set_ylabel(f'Mean pairwise distance ({e.CLUSTERING_METRIC})')
+            fig_h.tight_layout()
+            fig_h.savefig(os.path.join(e.path, f'dendrogram_ch{ch_idx}.png'), dpi=150)
+            plt.close(fig_h)
+
+            max_d = float(Z[:, 2].max()) if len(Z) > 0 else 0.0
+            for frac in np.arange(0.1, 0.91, 0.1):
+                t_cut = float(frac) * max_d
+                grouping = fcluster(Z, t=t_cut, criterion='distance')
+                groups: t.Dict[int, t.List[int]] = {}
+                for leaf_idx, g in enumerate(grouping):
+                    groups.setdefault(int(g), []).append(infos_sorted[leaf_idx]['index'])
+                summary = ' | '.join(
+                    '[' + ', '.join(f'cl{ci}' for ci in sorted(members)) + ']'
+                    for members in groups.values()
+                )
+                e.log(f'  ch{ch_idx} cut={frac:.0%} (d={t_cut:.4f}): {summary}')
+
+        hierarchy_path = os.path.join(e.path, 'cluster_hierarchy.pkl')
+        with open(hierarchy_path, 'wb') as f:
+            pickle.dump(cluster_hierarchy, f)
+        e.log(f'saved cluster hierarchy ({len(cluster_hierarchy)} channel(s)) to {hierarchy_path}')
+
     # ~ Sample element distance heatmap
     # Pick a configurable number of random elements from the dataset and compute their distances
     # to every cluster centroid/medoid. Visualized as a heatmap with rows sorted by nearest cluster.
@@ -1328,6 +1478,25 @@ def experiment(e: Experiment):
         fig_hm.tight_layout()
         fig_hm.savefig(os.path.join(e.path, 'sample_element_distances.png'), dpi=150)
         plt.close(fig_hm)
+
+    # ~ Export Clustering archive (.clu)
+    # Build a self-contained Clustering object from the in-memory experiment data and
+    # save it as a .clu zip archive. This single file replaces the separate
+    # clusterers.pkl / centroids.json / cluster_hierarchy.pkl artefacts for downstream
+    # consumption (predict_and_score.py, interactive visualizations).
+    from megan_global_explanations.data import Clustering as ClusteringData
+
+    clustering_obj = ClusteringData.from_experiment(
+        cluster_infos=cluster_infos,
+        channel_infos=e.CHANNEL_INFOS,
+        clustering_metric=e.CLUSTERING_METRIC,
+        channel_embeddings_map=channel_embeddings_map,
+        channel_labels=channel_labels,
+        cluster_hierarchy=cluster_hierarchy or None,
+    )
+    clustering_clu_path = os.path.join(e.path, 'clustering.clu')
+    clustering_obj.save(clustering_clu_path)
+    e.log(f'saved Clustering archive to {clustering_clu_path}')
 
     # :hook post_clustering:
     #       This hook is called at the very end of the experiment after all clustering, prototype optimization,
