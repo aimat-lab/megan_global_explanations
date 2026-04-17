@@ -1,8 +1,9 @@
 extend: vgd_concept_extraction__synth2.py
 
 parameters:
+  CLUSTER_SCORE_METHOD: 'knn'
   CLUSTERING_METRIC: 'cosine'
   FIDELITY_THRESHOLD: 0.5
-  MIN_CLUSTER_SIZE: 100
-  MIN_SAMPLES: 300
+  MIN_CLUSTER_SIZE: 50
+  MIN_SAMPLES: 10
   CLUSTER_SELECTION_METHOD: 'eom'

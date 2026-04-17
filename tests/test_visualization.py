@@ -37,15 +37,20 @@ def test_concept_umap_visualization_works():
     }
     
     concepts: list[dict] = load_mock_clusters(
-        embedding_dim=embedding_dim, 
+        embedding_dim=embedding_dim,
         num_channels=num_channels
-    )  
-    embeddings = np.random.random(size=(num_elements, embedding_dim, num_channels))
-    
+    )
+    # The function expects a list of graph dicts, each with a 'graph_embeddings' key
+    # of shape (embedding_dim, num_channels).
+    graphs = [
+        {'graph_embeddings': np.random.random(size=(embedding_dim, num_channels))}
+        for _ in range(num_elements)
+    ]
+
     # ~ testing
     fig, mappers = concept_umap_visualization(
         concepts=concepts,
-        embeddings=embeddings,
+        graphs=graphs,
         channel_infos=channel_infos,
         num_neighbors=10,
         logger=LOG,
