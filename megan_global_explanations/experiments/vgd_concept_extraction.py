@@ -60,6 +60,7 @@ from megan_global_explanations.gpt import describe_color_graph
 from megan_global_explanations.data import ConceptWriter
 from megan_global_explanations.data import ConceptReader
 from megan_global_explanations.data import select_representatives
+from megan_global_explanations.data import sharpen_scores
 from megan_global_explanations.utils import EXPERIMENTS_PATH
 
 mpl.use('Agg')
@@ -158,6 +159,30 @@ REPRESENTATIVE_STRATEGY: str = 'temperature'
 #       fraction of the median intra-cluster centroid distance.
 #       0.5 = strong centroid bias, 1.0 = moderate, 2.0+ = near-uniform.
 REPRESENTATIVE_TEMPERATURE: float = 0.7
+
+# == SCORE SHARPENING PARAMETERS ==
+# These parameters control optional post-processing of cluster distances that
+# forces more decisive cluster assignments. Sharpening maps a distance vector
+# through softmax/sparsemax of negative distances, producing near-binary scores
+# when one cluster is clearly closest while staying ambiguous when the input is
+# genuinely uncertain. Elements whose per-channel fidelity falls below
+# ``FIDELITY_THRESHOLD`` are left unsharpened so that out-of-cluster samples
+# don't get forced into a random cluster.
+
+# :param SHARPEN_SCORES:
+#       When True, sharpen cluster distances in the sample_element_distances
+#       heatmap via softmax/sparsemax. Does not affect the raw scoring hook
+#       (only the visualization).
+SHARPEN_SCORES: bool = True
+# :param SHARPEN_METHOD:
+#       'sparsemax' (produces exact zeros for weak matches when a clear winner
+#       exists) or 'softmax' (smoother, never exactly zero).
+SHARPEN_METHOD: str = 'sparsemax'
+# :param SHARPEN_TEMPERATURE:
+#       Temperature multiplier passed to ``sharpen_scores``. Auto-scaled by
+#       the median per-row distance. Lower = more discrete, higher = smoother.
+SHARPEN_TEMPERATURE: float = 0.5
+
 # :param SORT_SIMILARITY:
 #       This boolean flag determines whether the clusters should be sorted by their similarity.
 #       If this is True, the clusters will be sorted by their similarity which means that the order 
@@ -1433,11 +1458,36 @@ def experiment(e: Experiment):
                 channel_clusterers=channel_clusterers,
             )
 
+        # Optional sharpening: for each sample row, sharpen the distances per
+        # channel (clusters from different channels are not directly comparable)
+        # and gate by that sample's per-channel fidelity against FIDELITY_THRESHOLD.
+        # Below-threshold channels get their cells set to 1.0 (the max sharpened
+        # "distance"), keeping the whole heatmap on a consistent [0, 1] scale.
+        if e.SHARPEN_SCORES:
+            e.log(f'sharpening heatmap scores ({e.SHARPEN_METHOD}, gate=fidelity>={e.FIDELITY_THRESHOLD})')
+            channel_to_cols: t.Dict[int, t.List[int]] = {}
+            for j, info in enumerate(cluster_infos):
+                channel_to_cols.setdefault(info['channel_index'], []).append(j)
+            for i, g in enumerate(sample_graphs):
+                fidelity = np.asarray(g.get('graph_fidelity', np.zeros(e['num_channels'])))
+                for ch_idx, cols in channel_to_cols.items():
+                    if float(fidelity[ch_idx]) < e.FIDELITY_THRESHOLD:
+                        dist_data[i, cols] = 1.0  # not assigned to any cluster
+                        continue
+                    raw = dist_data[i, cols]
+                    dist_data[i, cols] = sharpen_scores(
+                        raw,
+                        method=e.SHARPEN_METHOD,
+                        temperature=e.SHARPEN_TEMPERATURE,
+                    )
+
         # Sort rows by their nearest cluster for visual grouping
         nearest_cluster = np.argmin(dist_data, axis=1)
         sort_order = np.lexsort((dist_data[np.arange(n_samples), nearest_cluster], nearest_cluster))
         dist_data_sorted = dist_data[sort_order]
         sample_indices_sorted = sample_indices[sort_order]
+        sample_graphs_sorted = [sample_graphs[i] for i in sort_order]
+        nearest_cluster_sorted = nearest_cluster[sort_order]
 
         # Build row labels (use graph_repr/SMILES if available, otherwise dataset index)
         row_labels = []
@@ -1450,6 +1500,15 @@ def experiment(e: Experiment):
             else:
                 row_labels.append(str(idx))
 
+        # Fidelity check for styling: rows whose nearest-cluster channel has
+        # fidelity >= FIDELITY_THRESHOLD are rendered bold ("trustworthy
+        # assignment"); those below threshold are italic ("likely noise").
+        row_above_threshold: t.List[bool] = []
+        for i, g in enumerate(sample_graphs_sorted):
+            nearest_ch = cluster_infos[int(nearest_cluster_sorted[i])]['channel_index']
+            fidelity = np.asarray(g.get('graph_fidelity', np.zeros(e['num_channels'])))
+            row_above_threshold.append(float(fidelity[nearest_ch]) >= e.FIDELITY_THRESHOLD)
+
         fig_hm, ax_hm = plt.subplots(
             figsize=(max(8, len(cluster_infos) * 1.5), max(8, n_samples * 0.35)),
         )
@@ -1458,7 +1517,12 @@ def experiment(e: Experiment):
         ax_hm.set_xticks(range(len(cluster_labels_hm)))
         ax_hm.set_xticklabels(cluster_labels_hm, rotation=45, ha='right', fontsize=8)
         ax_hm.set_yticks(range(n_samples))
-        ax_hm.set_yticklabels(row_labels, fontsize=7)
+        y_tick_labels = ax_hm.set_yticklabels(row_labels, fontsize=7)
+        for tick, above in zip(y_tick_labels, row_above_threshold):
+            if above:
+                tick.set_fontweight('bold')
+            else:
+                tick.set_fontstyle('italic')
         ax_hm.set_title(
             f'Sample Element Scores to Cluster Representatives\n'
             f'Sorted by nearest cluster — representative: {e.CLUSTER_REPRESENTATIVE}',

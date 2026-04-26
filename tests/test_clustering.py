@@ -7,7 +7,13 @@ import typing as t
 import numpy as np
 import pytest
 
-from megan_global_explanations.data import Clustering, ClusterView, select_representatives
+from megan_global_explanations.data import (
+    Clustering,
+    ClusterView,
+    select_representatives,
+    sharpen_scores,
+    sparsemax,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -816,3 +822,133 @@ class TestReportFromClustering:
             # Check that example images were generated in the cache
             example_pngs = [f for f in os.listdir(cache_path) if 'example' in f]
             assert len(example_pngs) > 0
+
+
+# ── sparsemax ────────────────────────────────────────────────────────
+
+class TestSparsemax:
+
+    def test_sums_to_one(self):
+        p = sparsemax(np.array([1.0, 2.0, 3.0]))
+        assert abs(p.sum() - 1.0) < 1e-6
+
+    def test_non_negative(self):
+        p = sparsemax(np.random.randn(10))
+        assert (p >= 0).all()
+
+    def test_produces_exact_zeros_when_separated(self):
+        """Well-separated inputs should give exact zeros for losers."""
+        p = sparsemax(np.array([10.0, 0.0, 0.0, 0.0]))
+        assert p[0] == 1.0
+        assert (p[1:] == 0.0).all()
+
+    def test_spreads_when_ambiguous(self):
+        """Close-together inputs should give a spread output (no zeros)."""
+        p = sparsemax(np.array([1.0, 1.0, 1.0]))
+        assert (p > 0).all()
+
+    def test_empty_input(self):
+        p = sparsemax(np.array([]))
+        assert len(p) == 0
+
+
+# ── sharpen_scores ───────────────────────────────────────────────────
+
+class TestSharpenScores:
+
+    def test_returns_array_of_same_length(self):
+        d = np.array([1.0, 2.0, 3.0, 4.0])
+        out = sharpen_scores(d, method='sparsemax')
+        assert len(out) == len(d)
+
+    def test_best_score_near_zero(self):
+        """The smallest raw distance should become the smallest sharpened score."""
+        d = np.array([0.1, 5.0, 10.0, 8.0])
+        out = sharpen_scores(d, method='sparsemax', temperature=0.1)
+        assert np.argmin(out) == np.argmin(d)
+
+    def test_sparsemax_produces_ones(self):
+        """With clear winner and low temperature, losers should be exactly 1.0."""
+        d = np.array([0.1, 10.0, 10.0])
+        out = sharpen_scores(d, method='sparsemax', temperature=0.05)
+        # Winner is near 0, losers are exactly 1.0
+        assert out[0] < 0.1
+        assert out[1] == 1.0
+        assert out[2] == 1.0
+
+    def test_softmax_no_exact_ones(self):
+        """Softmax preserves some probability on losers, so outputs < 1.0."""
+        d = np.array([0.1, 10.0, 10.0])
+        out = sharpen_scores(d, method='softmax', temperature=0.5)
+        assert (out < 1.0).all()
+
+    def test_high_temperature_is_flat(self):
+        """Very high temperature should leave scores near-uniform (~1 - 1/K)."""
+        d = np.array([1.0, 2.0, 3.0])
+        out = sharpen_scores(d, method='softmax', temperature=1000.0)
+        expected = 1.0 - 1.0 / 3.0
+        for v in out:
+            assert abs(v - expected) < 0.05
+
+    def test_unknown_method_raises(self):
+        with pytest.raises(ValueError, match='Unknown sharpening method'):
+            sharpen_scores(np.array([1.0, 2.0]), method='bogus')
+
+    def test_empty_input(self):
+        out = sharpen_scores(np.array([]))
+        assert len(out) == 0
+
+
+# ── Clustering.score with sharpening ─────────────────────────────────
+
+class TestClusteringScoreSharpened:
+
+    def test_sharpen_none_returns_raw(self):
+        """Without sharpen, scores are raw distances (can be > 1)."""
+        c = make_synthetic_clustering(num_channels=1, clusters_per_channel=3)
+        emb = np.random.randn(16)
+        scores = c.score(emb, channel=0, method='knn', k=5)
+        # Raw distances can be anything — just check they exist
+        assert all(isinstance(v, float) for v in scores.values())
+
+    def test_sharpen_sparsemax_bounds(self):
+        c = make_synthetic_clustering(num_channels=1, clusters_per_channel=3)
+        emb = np.random.randn(16)
+        scores = c.score(emb, channel=0, method='knn', k=5,
+                         sharpen='sparsemax', sharpen_temperature=0.5)
+        # All sharpened scores should be in [0, 1]
+        for v in scores.values():
+            assert 0.0 <= v <= 1.0
+
+    def test_sharpen_preserves_ranking(self):
+        """Sharpening should not change which cluster is closest."""
+        c = make_synthetic_clustering(num_channels=1, clusters_per_channel=3)
+        emb = np.random.randn(16)
+        raw = c.score(emb, channel=0, method='knn', k=5)
+        sharpened = c.score(emb, channel=0, method='knn', k=5,
+                            sharpen='sparsemax', sharpen_temperature=0.5)
+        raw_winner = min(raw, key=raw.get)
+        sharp_winner = min(sharpened, key=sharpened.get)
+        assert raw_winner == sharp_winner
+
+    def test_fidelity_gate_below_threshold(self):
+        """Fidelity below threshold should mark all clusters as not-assigned (1.0)."""
+        c = make_synthetic_clustering(num_channels=1, clusters_per_channel=3)
+        emb = np.random.randn(16)
+        gated = c.score(emb, channel=0, method='knn', k=5,
+                        sharpen='sparsemax', sharpen_temperature=0.5,
+                        fidelity=0.1, fidelity_threshold=0.5)
+        # All clusters should be at the max sharpened distance
+        for v in gated.values():
+            assert v == 1.0
+
+    def test_fidelity_gate_above_threshold(self):
+        """Fidelity above threshold should apply sharpening."""
+        c = make_synthetic_clustering(num_channels=1, clusters_per_channel=3)
+        emb = np.random.randn(16)
+        sharpened = c.score(emb, channel=0, method='knn', k=5,
+                            sharpen='sparsemax', sharpen_temperature=0.5,
+                            fidelity=0.9, fidelity_threshold=0.5)
+        # Sharpened output is in [0, 1]
+        for v in sharpened.values():
+            assert 0.0 <= v <= 1.0

@@ -92,7 +92,7 @@ PROCESSING_PATH: str = "process.py"
 
 # A SMILES string to run prediction + cluster scoring for. The default below is
 # a trivial example; replace it with any molecule of interest.
-SMILES: str = "C1=CC=CC=C1CC(=O)"  # ethanol
+SMILES: str = "C1=CC=CC=C1CC(=O)NC"  # ethanol
 
 # Scoring method: 'knn' (mean of k nearest member distances) or 'distance'
 # (distance to centroid). The metric is stored inside the .clu archive.
@@ -100,6 +100,26 @@ SCORE_METHOD: str = 'knn'
 
 # Number of nearest cluster members to average over (knn mode only).
 SCORE_KNN_K: int = 5
+
+# Optional post-processing to force more decisive cluster assignments.
+#   None         — return raw distances
+#   'sparsemax'  — produces exact zeros for weak matches when one cluster clearly wins
+#   'softmax'    — smoother, never exactly zero
+SCORE_SHARPEN: t.Optional[str] = 'sparsemax'
+
+# Temperature multiplier for the sharpening (lower = more discrete).
+SCORE_SHARPEN_TEMPERATURE: float = 0.5
+
+# Per-channel fidelity threshold. Channels where the molecule's fidelity falls
+# below this are treated as "not assigned to any cluster" — sharpening is
+# skipped and all cluster scores in that channel are set to 1.0. Match the
+# FIDELITY_THRESHOLD used when the experiment was run.
+FIDELITY_THRESHOLD: float = 0.1
+
+# Dataset type — determines how per-channel fidelity is derived from the
+# model's leave-one-out deviations. Must match the experiment that produced
+# the Clustering. Either 'regression' or 'classification'.
+DATASET_TYPE: str = 'regression'
 
 
 # Directory of this script file — relative paths in the configuration block above
@@ -118,6 +138,23 @@ def resolve_path(path: str) -> str:
     to the directory containing this script.
     """
     return path if os.path.isabs(path) else os.path.join(SCRIPT_DIR, path)
+
+
+def compute_graph_fidelity(deviation: np.ndarray, dataset_type: str) -> np.ndarray:
+    """Derive a per-channel fidelity vector from the model's leave-one-out deviation.
+
+    Matches the formula used inside ``vgd_concept_extraction.py`` so the
+    fidelity scale is identical to what ``FIDELITY_THRESHOLD`` was calibrated
+    against at training time.
+    """
+    dev = np.asarray(deviation)
+    if dataset_type == 'regression':
+        # For a 2-channel MEGAN regressor: channel 0 captures negative
+        # contributions, channel 1 captures positive ones.
+        return np.array([-dev[0, 0], dev[0, 1]])
+    if dataset_type == 'classification':
+        return np.diag(dev)
+    raise ValueError(f"Unknown dataset_type: {dataset_type!r}")
 
 
 def load_processing(processing_path: str):
@@ -218,24 +255,47 @@ def main() -> None:
     print(f'      node_importance  shape = {node_importance.shape}')
     print(f'      edge_importance  shape = {edge_importance.shape}')
 
+    # Compute per-channel fidelity via leave-one-out deviations. This matches
+    # the fidelity the experiment used to decide which molecules were eligible
+    # for clustering — below FIDELITY_THRESHOLD means "this channel does not
+    # meaningfully explain the prediction", so we suppress cluster assignments
+    # there at scoring time.
+    deviations = model.leave_one_out_deviations([graph])
+    graph_fidelity = compute_graph_fidelity(deviations[0], DATASET_TYPE)
+    print(f'      graph_fidelity        = {np.round(graph_fidelity, 3).tolist()}')
+
     # --- 6. Load the clustering archive ---
     print('\n[5/5] Loading clustering archive...')
     clustering = Clustering.load(clustering_path)
+    
     for ch_idx, ch_data in clustering.channels.items():
         n_cl = len(ch_data['clusters'])
         n_emb = len(ch_data['embeddings'])
         print(f'      channel {ch_idx}: {n_cl} cluster(s), {n_emb} embeddings')
 
     # --- 7. Score against all clusters per channel ---
-    print(f'\n=== Computing cluster scores (method={SCORE_METHOD!r}) ===')
-    cluster_rows: t.List[t.Tuple[str, int, float]] = []
+    method_tag = SCORE_METHOD if SCORE_SHARPEN is None else f'{SCORE_METHOD}+{SCORE_SHARPEN}'
+    print(f'\n=== Computing cluster scores (method={method_tag!r}) ===')
+    cluster_rows: t.List[t.Tuple[str, int, float, bool]] = []  # (id, ch, score, above_threshold)
 
     for ch_idx in sorted(clustering.channels.keys()):
         channel_emb = graph_embedding[:, ch_idx]
-        scores = clustering.score(channel_emb, channel=ch_idx,
-                                  method=SCORE_METHOD, k=SCORE_KNN_K)
+        fidelity_k = float(graph_fidelity[ch_idx])
+        above = fidelity_k >= FIDELITY_THRESHOLD
+
+        # Clustering.score() handles the fidelity gate internally when sharpening
+        # is on: below-threshold channels get every cluster set to 1.0.
+        scores = clustering.score(
+            channel_emb, channel=ch_idx,
+            method=SCORE_METHOD,
+            k=SCORE_KNN_K,
+            sharpen=SCORE_SHARPEN,
+            sharpen_temperature=SCORE_SHARPEN_TEMPERATURE,
+            fidelity=fidelity_k,
+            fidelity_threshold=FIDELITY_THRESHOLD,
+        )
         for cl_id, score in scores.items():
-            cluster_rows.append((cl_id, ch_idx, score))
+            cluster_rows.append((cl_id, ch_idx, score, above))
 
     # =====================================================================
     # === Neatly print everything =======================================
@@ -262,17 +322,27 @@ def main() -> None:
         vec = node_importance[:, ch]
         print(f'  channel {ch}: {fmt_vector(vec)}')
 
-    print(f'\n-- Cluster scores ({SCORE_METHOD}) --')
+    print(f'\n-- Cluster scores ({method_tag}) --')
     print(f'  {"cluster":<16} {"score":>10}   {"interpretation"}')
     print(f'  {"-" * 16} {"-" * 10}   {"-" * 20}')
-    finite = [s for _, _, s in cluster_rows if not np.isnan(s)]
+    finite = [s for _, _, s, _ in cluster_rows if not np.isnan(s)]
     best = min(finite) if finite else 0.0
     worst = max(finite) if finite else 1.0
     span = max(worst - best, 1e-9)
 
-    for cl_id, ch_idx, score in cluster_rows:
-        if np.isnan(score):
+    for cl_id, ch_idx, score, above in cluster_rows:
+        if not above:
+            badge = 'below fidelity threshold'
+        elif np.isnan(score):
             badge = 'no member data'
+        elif SCORE_SHARPEN is not None:
+            # Bounded [0, 1] scores — use absolute thresholds
+            if score < 0.1:
+                badge = 'core member'
+            elif score < 0.5:
+                badge = 'partial fit'
+            else:
+                badge = 'far from cluster'
         else:
             rel = (score - best) / span
             if rel < 0.25:

@@ -500,6 +500,79 @@ class ConceptReader():
 # =====================================================================
 
 
+def sparsemax(logits: np.ndarray) -> np.ndarray:
+    """Project a vector of logits onto the probability simplex (sparsemax).
+
+    Equivalent to ``argmin_{p in simplex} ||p - logits||^2``. Unlike softmax,
+    sparsemax produces **exact zeros** for entries that fall outside the
+    support of the projection, which makes it a natural fit for turning
+    well-separated scores into near-one-hot assignments while still degrading
+    gracefully when the inputs are ambiguous.
+
+    :param logits: 1-D array of real-valued logits.
+    :returns: 1-D array of same length with non-negative entries summing to 1.
+    """
+    z = np.asarray(logits, dtype=np.float64)
+    n = len(z)
+    if n == 0:
+        return np.zeros_like(z)
+    sorted_z = np.sort(z)[::-1]
+    cumsum = np.cumsum(sorted_z)
+    k = np.arange(1, n + 1)
+    support = (1 + k * sorted_z) > cumsum
+    k_z = int(support.sum())
+    tau = (cumsum[k_z - 1] - 1) / k_z
+    return np.maximum(z - tau, 0.0)
+
+
+def sharpen_scores(
+    distances: np.ndarray,
+    method: str = 'sparsemax',
+    temperature: float = 1.0,
+    auto_scale: bool = True,
+) -> np.ndarray:
+    """Convert a distance vector into a more discrete 'distance' via softmax/sparsemax.
+
+    Forces cluster assignments to be more decisive: the closest cluster gets a
+    score near 0, distant clusters get scores near 1. When the differences
+    between distances are small, the output stays ambiguous (multiple clusters
+    share mass) — so this only "snaps" to hard assignments when the distances
+    actually warrant it.
+
+    :param distances: 1-D array of raw cluster distances (lower = better fit).
+    :param method: ``'sparsemax'`` (produces exact zeros for weak matches) or
+        ``'softmax'`` (smoother, never exactly zero).
+    :param temperature: Sharpening temperature. Lower values produce more
+        discrete assignments; higher values keep the output smooth.
+    :param auto_scale: If True, multiply ``temperature`` by the median
+        distance so the parameter is dataset-invariant (0.5 = half the median
+        → strong sharpening, 1.0 = moderate, 2.0+ = soft).
+    :returns: 1-D array of "sharpened distances" in ``[0, 1]``, same length
+        as ``distances``. Lower = better fit, matching the distance convention.
+    """
+    d = np.asarray(distances, dtype=np.float64)
+    if len(d) == 0:
+        return np.zeros_like(d)
+
+    tau = float(temperature)
+    if auto_scale:
+        tau = tau * max(float(np.median(d)), 1e-9)
+    tau = max(tau, 1e-9)
+
+    logits = -d / tau
+
+    if method == 'softmax':
+        logits = logits - logits.max()
+        probs = np.exp(logits)
+        probs = probs / probs.sum()
+    elif method == 'sparsemax':
+        probs = sparsemax(logits)
+    else:
+        raise ValueError(f"Unknown sharpening method: {method!r}")
+
+    return 1.0 - probs
+
+
 def select_representatives(
     distances: np.ndarray,
     n: int,
@@ -985,6 +1058,10 @@ class Clustering:
         channel: int,
         method: str = 'knn',
         k: int = 5,
+        sharpen: t.Optional[str] = None,
+        sharpen_temperature: float = 1.0,
+        fidelity: t.Optional[float] = None,
+        fidelity_threshold: t.Optional[float] = None,
     ) -> t.Dict[str, float]:
         """Score an embedding against all clusters in a channel.
 
@@ -993,6 +1070,18 @@ class Clustering:
         :param method: ``'knn'`` (mean of k nearest member distances) or
             ``'distance'`` (distance to centroid).
         :param k: Number of neighbours for knn mode.
+        :param sharpen: Optional post-processing to force more discrete cluster
+            assignments. ``'sparsemax'`` produces exact zeros for weak matches
+            when a clear winner exists; ``'softmax'`` produces a smoother
+            distribution. ``None`` (default) returns the raw distances.
+        :param sharpen_temperature: Temperature multiplier passed to
+            :func:`sharpen_scores`. Lower = more discrete, higher = smoother.
+        :param fidelity: Optional per-embedding fidelity value. When provided
+            together with ``fidelity_threshold``, sharpening is only applied if
+            ``fidelity >= fidelity_threshold`` — below threshold the raw
+            distances are returned unchanged. Prevents forcing cluster
+            assignments on elements that don't semantically belong anywhere.
+        :param fidelity_threshold: See ``fidelity``.
         :returns: ``{cluster_id: score}`` dict. Lower = better fit.
         """
         # Resolve the metric from the channel data. For merged views the
@@ -1003,7 +1092,8 @@ class Clustering:
         emb = np.asarray(embedding).reshape(1, -1).astype(np.float64)
 
         if self.merged_map is not None:
-            # Merged view: compute leaf scores first, aggregate via min
+            # Merged view: compute leaf scores first, aggregate via min.
+            # Sharpening is applied to the aggregated super-cluster scores.
             leaf_scores = self.parent.score(embedding, channel, method=method, k=k)
             results: t.Dict[str, float] = {}
             for super_id, leaf_ids in self.merged_map.items():
@@ -1011,28 +1101,49 @@ class Clustering:
                             if lid in leaf_scores]
                 if relevant:
                     results[super_id] = min(relevant)
-            return results
-
-        # Base clustering: score against each leaf cluster in this channel
-        results = {}
-        for cl_id, cl_data in self.cluster_index.items():
-            if cl_data['channel'] != channel:
-                continue
-
-            members = np.asarray(cl_data['members'])
-            if method == 'knn':
-                k_actual = min(k, len(members))
-                if k_actual == 0:
+        else:
+            # Base clustering: score against each leaf cluster in this channel
+            results = {}
+            for cl_id, cl_data in self.cluster_index.items():
+                if cl_data['channel'] != channel:
                     continue
-                dists = pairwise_distances(emb, members, metric=metric)[0]
-                score = float(np.partition(dists, k_actual - 1)[:k_actual].mean())
-            elif method == 'distance':
-                centroid = cl_data['centroid'].reshape(1, -1)
-                score = float(pairwise_distances(emb, centroid, metric=metric)[0, 0])
-            else:
-                raise ValueError(f"Unknown scoring method: {method!r}")
 
-            results[cl_id] = score
+                members = np.asarray(cl_data['members'])
+                if method == 'knn':
+                    k_actual = min(k, len(members))
+                    if k_actual == 0:
+                        continue
+                    dists = pairwise_distances(emb, members, metric=metric)[0]
+                    score = float(np.partition(dists, k_actual - 1)[:k_actual].mean())
+                elif method == 'distance':
+                    centroid = cl_data['centroid'].reshape(1, -1)
+                    score = float(pairwise_distances(emb, centroid, metric=metric)[0, 0])
+                else:
+                    raise ValueError(f"Unknown scoring method: {method!r}")
+
+                results[cl_id] = score
+
+        # Optional sharpening, gated by fidelity when both are supplied.
+        # In sharpened mode the output lives in [0, 1] where 1.0 = "not assigned",
+        # so when fidelity is below threshold we set every cluster's score to 1.0
+        # to signal "this embedding does not belong to any cluster in this channel"
+        # — preventing the sharpening from forcing a spurious assignment on an
+        # out-of-distribution input.
+        if sharpen is not None and results:
+            below_threshold = (
+                fidelity is not None
+                and fidelity_threshold is not None
+                and float(fidelity) < float(fidelity_threshold)
+            )
+            if below_threshold:
+                results = {cid: 1.0 for cid in results}
+            else:
+                cluster_ids = list(results.keys())
+                raw = np.array([results[cid] for cid in cluster_ids])
+                sharpened = sharpen_scores(
+                    raw, method=sharpen, temperature=sharpen_temperature,
+                )
+                results = dict(zip(cluster_ids, sharpened.tolist()))
 
         return results
 

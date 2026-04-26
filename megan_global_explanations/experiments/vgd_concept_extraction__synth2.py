@@ -26,6 +26,7 @@ from pycomex.functional.experiment import Experiment
 from pycomex.utils import file_namespace, folder_path
 
 from megan_global_explanations.utils import EXPERIMENTS_PATH
+from megan_global_explanations.data import sharpen_scores
 
 
 PATH = pathlib.Path(__file__).parent.absolute()
@@ -294,10 +295,15 @@ def post_clustering(e: Experiment,
                 row[f'fidelity_ch{ch_idx}'] = fid
         rows.append(row)
 
-    # Compute scores per cluster via the hook (batch over all graphs)
+    # Compute scores per cluster via the hook (batch over all graphs).
+    # Track which CSV column corresponds to which channel so we can apply
+    # the same sharpening + fidelity gate as the heatmap below.
+    channel_to_score_cols: t.Dict[int, t.List[str]] = {}
     for cluster_info in cluster_infos:
         ch_idx = cluster_info['channel_index']
         cl_idx = cluster_info['index']
+        col_name = f'score_ch{ch_idx}_cl{cl_idx}'
+        channel_to_score_cols.setdefault(ch_idx, []).append(col_name)
 
         all_embeddings = np.array([
             np.array(graph['graph_embedding'])[:, ch_idx] for graph in graphs
@@ -309,7 +315,29 @@ def post_clustering(e: Experiment,
             channel_clusterers=kwargs.get('channel_clusterers', {}),
         )
         for i, score in enumerate(scores):
-            rows[i][f'score_ch{ch_idx}_cl{cl_idx}'] = float(score)
+            rows[i][col_name] = float(score)
+
+    # Optional sharpening: mirror the heatmap behaviour so the CSV reflects
+    # what the experiment actually uses for cluster assignment. Below-fidelity
+    # rows get every cluster set to 1.0; above-threshold rows are sharpened
+    # per channel via ``sharpen_scores``.
+    if e.SHARPEN_SCORES:
+        e.log(f'sharpening CSV scores ({e.SHARPEN_METHOD}, gate=fidelity>={e.FIDELITY_THRESHOLD})')
+        for i, graph in enumerate(graphs):
+            fidelity = np.asarray(graph.get('graph_fidelity', np.zeros(e['num_channels'])))
+            for ch_idx, cols in channel_to_score_cols.items():
+                if float(fidelity[ch_idx]) < e.FIDELITY_THRESHOLD:
+                    for col in cols:
+                        rows[i][col] = 1.0
+                    continue
+                raw = np.array([rows[i][col] for col in cols])
+                sharpened = sharpen_scores(
+                    raw,
+                    method=e.SHARPEN_METHOD,
+                    temperature=e.SHARPEN_TEMPERATURE,
+                )
+                for col, val in zip(cols, sharpened):
+                    rows[i][col] = float(val)
 
     # Create DataFrame and save to CSV
     df = pd.DataFrame(rows)
