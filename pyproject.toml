@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "megan_global_explanations"
-version = "0.5.0"
+version = "0.6.0"
 description = "Insert Description"
 license = "MIT license"
 authors = ["Jonas Teufel <jonseb1998@gmail.com>"]
@@ -22,7 +22,13 @@ exclude = [
     "megan_global_explanations/experiments/results/*",
 #    "megan_global_explanations/experiments/assets/*",
     "megan_global_explanations/_experiments/*",
-    "tests/*"
+    "tests/*",
+    # Heavy binaries — examples/processing assets and pretrained checkpoints
+    # should not ship in the wheel; they push it past the 100 MB PyPI limit.
+    "megan_global_explanations/examples/*.ckpt",
+    "megan_global_explanations/examples/*.pkl",
+    "megan_global_explanations/examples/*.clu",
+    "megan_global_explanations/experiments/assets/models/*.ckpt",
 ]
 
 [tool.poetry.scripts]
@@ -65,7 +71,7 @@ replace = '__version__ = "{new_version}"'
 
 # --- bumpversion configuration ---
 [tool.bumpversion]
-current_version = "0.5.0"
+current_version = "0.6.0"
 parse = "(?<![=<>])(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
